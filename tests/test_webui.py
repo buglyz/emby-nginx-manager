@@ -513,6 +513,16 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('stty "$saved_tty"', wrapper)
         self.assertNotIn("stty echo", wrapper)
 
+    def test_wrapper_tracks_temp_files_without_command_substitution(self):
+        root = Path(__file__).resolve().parents[1]
+        wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")
+
+        self.assertIn("cleanup_tmp_files()", wrapper)
+        self.assertIn("trap cleanup_tmp_files EXIT", wrapper)
+        self.assertIn("trap 'cleanup_tmp_files; exit 130' INT", wrapper)
+        self.assertIn("make_tmp_file tmp_htpasswd", wrapper)
+        self.assertNotIn("=$(make_tmp_file)", wrapper)
+
 
 if __name__ == "__main__":
     unittest.main()

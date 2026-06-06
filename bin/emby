@@ -8,6 +8,48 @@ UNIT_FILE="/etc/systemd/system/$SERVICE_NAME"
 WEBUI_HTPASSWD="${EMBY_NGINX_MANAGER_WEBUI_HTPASSWD:-/etc/nginx/.htpasswd-emby-webui}"
 WEBUI_KEY_SNIPPET="${EMBY_NGINX_MANAGER_WEBUI_KEY_SNIPPET:-/etc/nginx/snippets/emby-webui-internal-key.conf}"
 NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+TMP_FILES=""
+
+cleanup_tmp_files() {
+    for tmp_file in $TMP_FILES; do
+        rm -f "$tmp_file"
+    done
+}
+
+make_tmp_file() {
+    target_var="$1"
+    case "$target_var" in
+        *[!A-Za-z0-9_]*|"")
+            echo "错误: 临时文件变量名无效。" >&2
+            exit 1
+            ;;
+    esac
+    tmp_file=$(mktemp)
+    TMP_FILES="${TMP_FILES}${TMP_FILES:+ }$tmp_file"
+    eval "$target_var=\$tmp_file"
+}
+
+forget_tmp_file() {
+    remove_tmp="$1"
+    kept=""
+    for tmp_file in $TMP_FILES; do
+        if [ "$tmp_file" != "$remove_tmp" ]; then
+            kept="${kept}${kept:+ }$tmp_file"
+        fi
+    done
+    TMP_FILES="$kept"
+}
+
+remove_tmp_file() {
+    tmp_file="$1"
+    rm -f "$tmp_file"
+    forget_tmp_file "$tmp_file"
+}
+
+trap cleanup_tmp_files EXIT
+trap 'cleanup_tmp_files; exit 129' HUP
+trap 'cleanup_tmp_files; exit 130' INT
+trap 'cleanup_tmp_files; exit 143' TERM
 
 if [ ! -f "$SCRIPT" ]; then
     SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -107,12 +149,12 @@ ensure_webui_env() {
         return
     fi
 
-    tmp_env=$(mktemp)
+    make_tmp_file tmp_env
     chmod 600 "$tmp_env"
     key=$(generate_access_key)
     printf 'EMBY_WEBUI_KEY=%s\n' "$key" > "$tmp_env"
     $SUDO install -m 600 "$tmp_env" "$ENV_FILE"
-    rm -f "$tmp_env"
+    remove_tmp_file "$tmp_env"
 }
 
 install_web_service() {
@@ -127,7 +169,7 @@ install_web_service() {
 
     ensure_webui_env
 
-    tmp_unit=$(mktemp)
+    make_tmp_file tmp_unit
     cat > "$tmp_unit" <<EOF
 [Unit]
 Description=Emby Nginx Manager WebUI
@@ -167,7 +209,7 @@ WantedBy=multi-user.target
 EOF
 
     $SUDO install -m 644 "$tmp_unit" "$UNIT_FILE"
-    rm -f "$tmp_unit"
+    remove_tmp_file "$tmp_unit"
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable "$SERVICE_NAME" >/dev/null
     $SUDO systemctl restart "$SERVICE_NAME"
@@ -302,7 +344,7 @@ install_htpasswd_if_needed() {
         exit 1
     fi
     hash=$(printf '%s\n' "$password" | openssl passwd -apr1 -stdin)
-    tmp_htpasswd=$(mktemp)
+    make_tmp_file tmp_htpasswd
     printf '%s:%s\n' "$basic_user" "$hash" > "$tmp_htpasswd"
     for candidate in nginx www-data http; do
         if getent group "$candidate" >/dev/null 2>&1; then
@@ -315,7 +357,7 @@ install_htpasswd_if_needed() {
     else
         $SUDO install -m 644 "$tmp_htpasswd" "$WEBUI_HTPASSWD"
     fi
-    rm -f "$tmp_htpasswd"
+    remove_tmp_file "$tmp_htpasswd"
 }
 
 install_web_proxy() {
@@ -394,18 +436,18 @@ install_web_proxy() {
     install_htpasswd_if_needed "$basic_user"
 
     $SUDO install -d "$(dirname "$WEBUI_KEY_SNIPPET")" "$NGINX_CONF_DIR"
-    tmp_snippet=$(mktemp)
+    make_tmp_file tmp_snippet
     printf 'proxy_set_header X-Emby-Webui-Key "%s";\n' "$webui_key" > "$tmp_snippet"
     $SUDO install -m 600 "$tmp_snippet" "$WEBUI_KEY_SNIPPET"
-    rm -f "$tmp_snippet"
+    remove_tmp_file "$tmp_snippet"
 
     backup_conf=""
     if $SUDO test -f "$conf_file"; then
-        backup_conf=$(mktemp)
+        make_tmp_file backup_conf
         $SUDO cp "$conf_file" "$backup_conf"
     fi
 
-    tmp_conf=$(mktemp)
+    make_tmp_file tmp_conf
     cat > "$tmp_conf" <<EOF
 # managed_by=emby-nginx-manager-webui
 # nre_webui_managed=true
@@ -461,7 +503,7 @@ server {
 }
 EOF
     $SUDO install -m 640 "$tmp_conf" "$conf_file"
-    rm -f "$tmp_conf"
+    remove_tmp_file "$tmp_conf"
 
     if ! $SUDO nginx -t; then
         if [ -n "$backup_conf" ]; then
@@ -469,11 +511,11 @@ EOF
         else
             $SUDO rm -f "$conf_file"
         fi
-        rm -f "$backup_conf"
+        [ -n "$backup_conf" ] && remove_tmp_file "$backup_conf"
         echo "错误: Nginx 配置测试失败，已回滚。" >&2
         exit 1
     fi
-    rm -f "$backup_conf"
+    [ -n "$backup_conf" ] && remove_tmp_file "$backup_conf"
     $SUDO nginx -s reload
     echo "WebUI 公网反代已安装: https://$proxy_domain/"
 }
