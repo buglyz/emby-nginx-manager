@@ -133,6 +133,32 @@ class RestorePathTests(unittest.TestCase):
         with self.assertRaises(webui.WebUIError):
             webui.validate_restore_member(member, data)
 
+    def test_webui_service_restore_requires_wrapper_script_argument(self):
+        member = self.member("etc/systemd/system/emby-nginx-webui.service")
+        data = (
+            b"Description=Emby Nginx Manager WebUI\n"
+            b"Environment=EMBY_WEBUI_SHOW_KEY_URL=0\n"
+            b"ExecStart=/usr/bin/python3 /opt/emby-nginx-manager/webui.py --host 127.0.0.1\n"
+            b"NoNewPrivileges=true\n"
+            b"PrivateTmp=true\n"
+        )
+
+        with self.assertRaises(webui.WebUIError):
+            webui.validate_restore_member(member, data)
+
+    def test_hardened_webui_service_restore_content_is_allowed(self):
+        member = self.member("etc/systemd/system/emby-nginx-webui.service")
+        data = (
+            b"Description=Emby Nginx Manager WebUI\n"
+            b"Environment=EMBY_WEBUI_SHOW_KEY_URL=0\n"
+            b"ExecStart=/usr/bin/python3 /opt/emby-nginx-manager/webui.py "
+            b"--script /opt/emby-nginx-manager/deploy.sh\n"
+            b"NoNewPrivileges=true\n"
+            b"PrivateTmp=true\n"
+        )
+
+        webui.validate_restore_member(member, data)
+
     def test_certificate_restore_requires_managed_config_reference(self):
         backup_dir, name = self.make_archive(
             {

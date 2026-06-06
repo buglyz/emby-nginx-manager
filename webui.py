@@ -45,8 +45,7 @@ MANAGED_CONFIG_MARKERS = (
 )
 WEBUI_SERVICE_MARKERS = (
     "Description=Emby Nginx Manager WebUI",
-    "ExecStart=",
-    "webui.py",
+    "Environment=EMBY_WEBUI_SHOW_KEY_URL=0",
     "NoNewPrivileges=true",
     "PrivateTmp=true",
 )
@@ -1377,13 +1376,25 @@ def cert_backup_arcname_allowed(arcname):
     return bool(CERT_BACKUP_ARC_RE.fullmatch(arcname))
 
 
+def webui_service_restore_allowed(text):
+    if not all(marker in text for marker in WEBUI_SERVICE_MARKERS):
+        return False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or not line.startswith("ExecStart="):
+            continue
+        command = line.split("=", 1)[1]
+        return "webui.py" in command and re.search(r"(^|\s)--script(\s|=|$)", command) is not None
+    return False
+
+
 def restore_member_content_allowed(arcname, data):
     if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
         text = data.decode("utf-8", errors="ignore")
         return any(marker in text for marker in MANAGED_CONFIG_MARKERS)
     if arcname == "etc/systemd/system/emby-nginx-webui.service":
         text = data.decode("utf-8", errors="ignore")
-        return all(marker in text for marker in WEBUI_SERVICE_MARKERS)
+        return webui_service_restore_allowed(text)
     if arcname == "etc/nginx/.htpasswd-emby-webui":
         return b"\n" not in data.rstrip(b"\n") and b":" in data
     if cert_backup_arcname_allowed(arcname):
