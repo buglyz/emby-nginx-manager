@@ -102,10 +102,52 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
+LOCK_DIR="${NRE_LOCK_DIR:-/tmp/emby-nginx-manager.lockdir}"
+LOCK_WAIT_SECONDS="${NRE_LOCK_WAIT_SECONDS:-30}"
+LOCK_HELD=""
+
+acquire_lock() {
+    local waited=0 pid
+
+    [[ -n "$LOCK_HELD" ]] && return 0
+
+    log_info "等待部署锁，避免并发写入 Nginx 配置..."
+    while ! $SUDO mkdir "$LOCK_DIR" 2>/dev/null; do
+        pid=""
+        if $SUDO [ -f "$LOCK_DIR/pid" ]; then
+            pid=$($SUDO cat "$LOCK_DIR/pid" 2>/dev/null || true)
+        fi
+        if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && ! $SUDO kill -0 "$pid" 2>/dev/null; then
+            $SUDO rm -rf "$LOCK_DIR"
+            continue
+        fi
+        if ((waited >= LOCK_WAIT_SECONDS)); then
+            log_error "另一个部署/删除操作仍在进行，请稍后重试。"
+            exit 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    printf '%s\n' "$$" | $SUDO tee "$LOCK_DIR/pid" > /dev/null
+    LOCK_HELD="mkdir"
+
+    trap 'release_lock' EXIT
+}
+
+release_lock() {
+    case "$LOCK_HELD" in
+        mkdir)
+            $SUDO rm -rf "$LOCK_DIR" 2>/dev/null || true
+            ;;
+    esac
+    LOCK_HELD=""
+}
+
 # --- 错误处理 ---
 handle_error() {
     local exit_code=$?
     local line_number=$1
+    release_lock
     echo >&2
     echo -e "${RED}--------------------------------------------------------${NC}" >&2
     echo -e "${RED}错误: 脚本在第 $line_number 行意外中止。${NC}" >&2
@@ -1079,6 +1121,7 @@ run_deploy_flow() {
         return 0
     fi
 
+    acquire_lock
     install_dependencies
     generate_nginx_config
     if ! issue_certificate; then
@@ -1091,6 +1134,7 @@ run_deploy_flow() {
         local protocol
         protocol=$(get_protocol "$no_tls")
         echo -e "${GREEN}访问地址: ${protocol}://${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
+        release_lock
     else
         rollback_generated_config
         exit 1
@@ -1994,6 +2038,7 @@ remove_domain_config() {
         fi
     fi
 
+    acquire_lock
     log_info "开始移除..."
     local remove_backup_path=""
     backup_file "$nginx_conf_file"
@@ -2016,6 +2061,7 @@ remove_domain_config() {
         else
             log_error "未找到可恢复的配置备份。"
         fi
+        release_lock
         return 1
     fi
 
@@ -2047,6 +2093,7 @@ remove_domain_config() {
     fi
 
     log_success "域名 '$domain' 的相关配置已成功移除！"
+    release_lock
 }
 
 # ===================================================================================

@@ -7,7 +7,13 @@ Host-mode Emby reverse proxy management script for an existing Nginx installatio
 Install or update:
 
 ```bash
-tmp=$(mktemp -d) && curl -fsSL https://github.com/buglyz/emby-nginx-manager/archive/refs/heads/main.tar.gz | tar -xz -C "$tmp" && bash "$tmp"/emby-nginx-manager-main/install.sh; rm -rf "$tmp"
+(
+  set -e
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  curl -fsSL https://github.com/buglyz/emby-nginx-manager/archive/refs/heads/main.tar.gz | tar -xz -C "$tmp"
+  bash "$tmp"/emby-nginx-manager-main/install.sh
+)
 ```
 
 Run the menu:

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import string
 import subprocess
 import sys
@@ -16,6 +17,9 @@ from urllib.parse import parse_qs, urlparse
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 ACCESS_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{8,128}$")
+DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+DNS_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
+URL_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
 MAX_BODY_BYTES = 64 * 1024
 COOKIE_NAME = "emby_webui_access"
 
@@ -848,16 +852,42 @@ def run_command(script, args, timeout):
     command = ["bash", str(script), *args]
     started = time.time()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(script.parent),
             text=True,
-            capture_output=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=command_env(),
+            start_new_session=True,
         )
+    except OSError as exc:
+        return {
+            "ok": False,
+            "exit_code": 127,
+            "command": shell_quote(command),
+            "output": strip_ansi(str(exc)),
+            "duration_ms": int((time.time() - started) * 1000),
+        }
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + (exc.stderr or "")
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
+        output = (stdout or "") + (stderr or "")
+        if not output and exc.output:
+            output = str(exc.output)
         return {
             "ok": False,
             "exit_code": 124,
@@ -866,7 +896,7 @@ def run_command(script, args, timeout):
             "duration_ms": int((time.time() - started) * 1000),
         }
 
-    output = (proc.stdout or "") + (proc.stderr or "")
+    output = (stdout or "") + (stderr or "")
     return {
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
@@ -931,13 +961,6 @@ def host_is_loopback(host):
         return False
 
 
-def require_text(payload, key, label):
-    value = clean_text_field(payload.get(key, ""), label=label, required=True)
-    if not value:
-        raise WebUIError(f"{label}不能为空")
-    return value
-
-
 def clean_text_field(value, label, required=False, max_len=512):
     value = str(value or "").strip()
     if not value:
@@ -951,19 +974,125 @@ def clean_text_field(value, label, required=False, max_len=512):
     return value
 
 
+def input_url_port(value):
+    host_port = value.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if host_port.startswith("["):
+        end = host_port.find("]")
+        if end != -1:
+            rest = host_port[end + 1 :]
+            if rest.startswith(":") and rest[1:].isdigit():
+                return rest[1:]
+            return ""
+    if host_port.count(":") == 1:
+        port = host_port.rsplit(":", 1)[1]
+        if port.isdigit():
+            return port
+    return ""
+
+
+def backend_should_default_http(value):
+    host_port = value.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if host_port == "localhost" or host_port.startswith("localhost:"):
+        return True
+    if host_port.startswith("127."):
+        return True
+    if host_port == "[::1]" or host_port.startswith("[::1]:"):
+        return True
+    return input_url_port(value) in {"80", "8096", "8097"}
+
+
+def normalize_url_for_validation(value, role):
+    if re.match(r"^https?://", value):
+        return value
+    if "://" in value:
+        raise WebUIError("地址只支持 http:// 或 https://")
+    port = input_url_port(value)
+    if role == "frontend" and port == "80":
+        return f"http://{value}"
+    if role == "backend" and backend_should_default_http(value):
+        return f"http://{value}"
+    return f"https://{value}"
+
+
+def validate_hostname(host, label):
+    host = host.strip("[]")
+    if not host:
+        raise WebUIError(f"{label}缺少主机名")
+    if "%" in host:
+        raise WebUIError(f"{label}不支持带 zone id 的 IPv6 地址")
+    try:
+        ipaddress.ip_address(host)
+        return
+    except ValueError:
+        pass
+    if len(host) > 253:
+        raise WebUIError(f"{label}主机名过长")
+    labels = host.rstrip(".").split(".")
+    if not labels or any(not DOMAIN_LABEL_RE.fullmatch(part) for part in labels):
+        raise WebUIError(f"{label}主机名格式无效")
+
+
+def validate_url_field(value, label, role):
+    value = clean_text_field(value, label=label, required=True)
+    if re.search(r"\s", value):
+        raise WebUIError(f"{label}不能包含空白字符")
+    normalized = normalize_url_for_validation(value, role)
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise WebUIError(f"{label}格式无效")
+    if parsed.username or parsed.password:
+        raise WebUIError(f"{label}不支持用户名或密码")
+    if parsed.query or parsed.fragment or parsed.params:
+        raise WebUIError(f"{label}不能包含查询参数或锚点")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise WebUIError(f"{label}端口无效") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise WebUIError(f"{label}端口必须在 1-65535 之间")
+    validate_hostname(parsed.hostname or "", label)
+    path = parsed.path or "/"
+    if URL_PATH_FORBIDDEN_RE.search(path):
+        raise WebUIError(f"{label}路径包含 Nginx 配置不支持的字符")
+    return value
+
+
+def validate_cert_domain(value):
+    value = clean_text_field(value, label="证书域名", max_len=253)
+    if not value:
+        return ""
+    if value.startswith("*."):
+        raise WebUIError("证书域名请输入根域名，不要包含 *.")
+    validate_hostname(value, "证书域名")
+    return value
+
+
+def validate_dns_provider(value):
+    value = clean_text_field(value, label="DNS Provider", max_len=32)
+    if not value:
+        return ""
+    if value.startswith("dns_"):
+        value = value[4:]
+    if not DNS_PROVIDER_RE.fullmatch(value):
+        raise WebUIError("DNS Provider 只能包含字母、数字或下划线")
+    return value
+
+
 def deploy_args(payload):
+    frontend = validate_url_field(payload.get("frontend", ""), "访问地址", "frontend")
+    backend = validate_url_field(payload.get("backend", ""), "后端地址", "backend")
     args = [
         "-y",
-        require_text(payload, "frontend", "访问地址"),
+        frontend,
         "-r",
-        require_text(payload, "backend", "后端地址"),
+        backend,
     ]
 
-    cert_domain = clean_text_field(payload.get("cert_domain", ""), label="证书域名", max_len=253)
+    cert_domain = validate_cert_domain(payload.get("cert_domain", ""))
     if cert_domain:
         args.extend(["--cert-domain", cert_domain])
 
-    dns_provider = clean_text_field(payload.get("dns_provider", ""), label="DNS Provider", max_len=32)
+    dns_provider = validate_dns_provider(payload.get("dns_provider", ""))
     if dns_provider:
         args.extend(["--dns", dns_provider])
 
@@ -1075,7 +1204,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json_body()
             if not payload.get("confirm_remove"):
                 raise WebUIError("需要确认删除配置")
-            target = require_text(payload, "target", "删除地址")
+            target = validate_url_field(payload.get("target", ""), "删除地址", "frontend")
         except WebUIError as exc:
             return self.json_response(400, {"error": str(exc)})
         result = run_command(self.server.script, ["--remove", target, "--yes"], timeout=300)
