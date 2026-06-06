@@ -1374,6 +1374,11 @@ issue_certificate() {
                 cleanup_stale_acme_record "$format_cert_domain"
                 return 1
             fi
+        elif should_use_webroot_http01 "$is_ip"; then
+            if ! issue_certificate_webroot; then
+                cleanup_stale_acme_record "$format_cert_domain"
+                return 1
+            fi
         else
             if ! issue_certificate_standalone "$is_ip"; then
                 cleanup_stale_acme_record "$format_cert_domain"
@@ -1420,6 +1425,93 @@ issue_certificate_dns() {
     cleanup_stale_acme_record "$format_cert_domain"
     if ! "$ACME_SH" --issue --force --dns "$dns_arg" "${domain_args[@]}" --keylength ec-256; then
         log_error "证书申请失败（重试后仍失败）。"
+        return 1
+    fi
+    return 0
+}
+
+should_use_webroot_http01() {
+    local is_ip_mode="$1"
+
+    [[ "$is_ip_mode" == "true" ]] && return 1
+    [[ "$format_cert_domain" != "$you_domain" ]] && return 1
+    command -v ss >/dev/null || return 1
+    pgrep -x nginx >/dev/null || return 1
+    ss -ltn '( sport = :80 )' | grep -q LISTEN
+}
+
+reload_nginx_quietly() {
+    if pgrep -x nginx >/dev/null; then
+        $SUDO nginx -s reload
+    elif command -v systemctl >/dev/null; then
+        $SUDO systemctl restart nginx
+    else
+        $SUDO rc-service nginx restart
+    fi
+}
+
+issue_certificate_webroot() {
+    local webroot="${ACME_HTTP_WEBROOT:-/usr/share/nginx/html}"
+    local conf_dir challenge_conf pending_conf safe_name issue_status=1
+    local restored_backup="no"
+
+    conf_dir=$(get_nginx_conf_dir)
+    safe_name=$(printf '%s' "$format_cert_domain" | tr -c 'A-Za-z0-9_.-' '_')
+    challenge_conf="$conf_dir/nre-acme-${safe_name}-80.conf"
+    pending_conf="${generated_conf_path}.acme-pending.$$"
+
+    log_info "检测到 Nginx 正在监听 80 端口，改用 webroot 模式申请证书。"
+    $SUDO mkdir -p "$webroot/.well-known/acme-challenge"
+
+    if [[ -n "${generated_conf_path:-}" && -f "$generated_conf_path" ]]; then
+        $SUDO mv "$generated_conf_path" "$pending_conf"
+        if [[ -n "${last_backup_path:-}" && -f "$last_backup_path" ]]; then
+            $SUDO cp "$last_backup_path" "$generated_conf_path"
+            restored_backup="yes"
+        fi
+    fi
+
+    {
+        echo "# temporary ACME HTTP-01 challenge for $format_cert_domain"
+        echo "server {"
+        echo "    listen 80;"
+        echo "    listen [::]:80;"
+        echo "    server_name $format_cert_domain;"
+        echo
+        echo "    location ^~ /.well-known/acme-challenge/ {"
+        echo "        root $webroot;"
+        echo "        default_type text/plain;"
+        echo "        try_files \$uri =404;"
+        echo "    }"
+        echo
+        echo "    location / {"
+        echo "        return 404;"
+        echo "    }"
+        echo "}"
+    } | $SUDO tee "$challenge_conf" > /dev/null
+
+    if $SUDO nginx -t && reload_nginx_quietly; then
+        if "$ACME_SH" --issue --webroot "$webroot" -d "$format_cert_domain" --keylength ec-256 "${issue_extra_args[@]}"; then
+            issue_status=0
+        fi
+    else
+        log_error "临时 ACME challenge 配置无法通过 Nginx 测试。"
+    fi
+
+    $SUDO rm -f "$challenge_conf"
+    if $SUDO nginx -t; then
+        reload_nginx_quietly || true
+    fi
+
+    if [[ -n "$pending_conf" && -f "$pending_conf" ]]; then
+        if [[ "$restored_backup" == "yes" ]]; then
+            $SUDO rm -f "$generated_conf_path"
+        fi
+        $SUDO mv "$pending_conf" "$generated_conf_path"
+    fi
+
+    if [[ "$issue_status" -ne 0 ]]; then
+        log_error "webroot 模式证书申请失败。"
         return 1
     fi
     return 0
