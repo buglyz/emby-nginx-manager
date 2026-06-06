@@ -1218,6 +1218,7 @@ generate_nginx_config() {
     fi
 
     export you_domain you_frontend_port resolver format_cert_domain ssl_certificate_path ssl_certificate_key_path
+    export acme_http_webroot="${ACME_HTTP_WEBROOT:-/usr/share/nginx/html}"
     export you_domain_path="${you_domain_path:-/}"
 
     local r_proto=$(get_protocol "$r_http_frontend")
@@ -1286,7 +1287,7 @@ export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[
 '
     fi
 
-    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $ssl_certificate_path $ssl_certificate_key_path $you_domain_path $you_domain_path_rewrite $r_domain_full $location_proxy_redirect $backstream_config $handle_redirect_config'
+    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $ssl_certificate_path $ssl_certificate_key_path $acme_http_webroot $you_domain_path $you_domain_path_rewrite $r_domain_full $location_proxy_redirect $backstream_config $handle_redirect_config'
 
     local clean_you_domain="${you_domain//[\[\]]/}"
     local conf_path conflict_path
