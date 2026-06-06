@@ -1505,6 +1505,24 @@ def backup_arcname(path):
     return str(path).lstrip("/")
 
 
+def normalize_tar_info(info, mode=None):
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    if mode is not None:
+        info.mode = mode
+    return info
+
+
+def add_backup_file(tar, path):
+    arcname = backup_arcname(path)
+    info = tar.gettarinfo(str(path), arcname=arcname)
+    normalize_tar_info(info, mode=restore_mode_for_arcname(arcname))
+    with path.open("rb") as handle:
+        tar.addfile(info, handle)
+
+
 def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     name = f"emby-nginx-manager-{time.strftime('%Y%m%d%H%M%S')}.tar.gz"
@@ -1521,10 +1539,10 @@ def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
         info = tarfile.TarInfo("manifest.json")
         info.size = len(manifest_data)
         info.mtime = int(time.time())
-        info.mode = 0o600
+        normalize_tar_info(info, mode=0o600)
         tar.addfile(info, io.BytesIO(manifest_data))
         for path in files:
-            tar.add(path, arcname=backup_arcname(path), recursive=False)
+            add_backup_file(tar, path)
 
     os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, final_path)

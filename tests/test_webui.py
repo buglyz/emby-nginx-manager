@@ -156,6 +156,30 @@ class RestorePathTests(unittest.TestCase):
         self.assertEqual(len(result["files"]), 3)
 
 
+class BackupArchiveTests(unittest.TestCase):
+    def test_backup_archive_scrubs_owner_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf = root / "emby.example.com-443.conf"
+            conf.write_text("# nre_emby_managed=true\nserver {}\n", encoding="utf-8")
+            backup_dir = root / "backups"
+
+            original_collect = webui.collect_backup_files
+            webui.collect_backup_files = lambda: [conf]
+            try:
+                result = webui.create_backup_archive(backup_dir)
+            finally:
+                webui.collect_backup_files = original_collect
+
+            with tarfile.open(result["path"], "r:gz") as tar:
+                for member in tar.getmembers():
+                    with self.subTest(member=member.name):
+                        self.assertEqual(member.uid, 0)
+                        self.assertEqual(member.gid, 0)
+                        self.assertEqual(member.uname, "")
+                        self.assertEqual(member.gname, "")
+
+
 class RequestSafetyTests(unittest.TestCase):
     class DummyHandler:
         def __init__(self, headers, access_key="secret"):
