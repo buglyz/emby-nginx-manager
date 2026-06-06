@@ -1726,6 +1726,23 @@ def replace_regular_file(src, dest, mode):
                 pass
 
 
+def ensure_regular_parent_dir(path):
+    parent = path.parent
+    existing = []
+    current = parent
+    while not current.exists() and current != current.parent:
+        existing.append(current)
+        current = current.parent
+    if current.is_symlink() or not current.is_dir():
+        raise WebUIError(f"恢复目标父目录不是普通目录: {current}")
+    for part in reversed(existing):
+        if part.exists() or part.is_symlink():
+            if part.is_symlink() or not part.is_dir():
+                raise WebUIError(f"恢复目标父目录不是普通目录: {part}")
+            continue
+        part.mkdir()
+
+
 def restore_backup_archive(backup_dir, name):
     name = clean_text_field(name, label="备份名称", required=True, max_len=128)
     if not BACKUP_NAME_RE.fullmatch(name):
@@ -1754,7 +1771,7 @@ def restore_backup_archive(backup_dir, name):
             src = tmp_root_path / member.name
             rel = Path(member.name)
             dest = Path("/") / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            ensure_regular_parent_dir(dest)
             if dest.exists() or dest.is_symlink():
                 if dest.is_symlink() or not dest.is_file():
                     raise WebUIError(f"恢复目标不是普通文件: {dest}")
