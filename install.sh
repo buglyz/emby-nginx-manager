@@ -25,6 +25,35 @@ for cmd in curl tar find install; do
     fi
 done
 
+validate_archive() {
+    archive_path="$1"
+    if ! tar -tzf "$archive_path" | while IFS= read -r member; do
+        case "$member" in
+            ""|/*|..|../*|*/..|*/../*)
+                echo "安装失败: 归档包含不安全路径: $member" >&2
+                exit 1
+                ;;
+        esac
+    done; then
+        exit 1
+    fi
+
+    if tar -tvzf "$archive_path" | while IFS= read -r line; do
+        type_char=${line%"${line#?}"}
+        case "$type_char" in
+            -|d)
+                ;;
+            *)
+                echo "安装失败: 归档包含不支持的特殊文件类型。" >&2
+                exit 1
+                ;;
+        esac
+    done; then
+        return 0
+    fi
+    exit 1
+}
+
 cleanup() {
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR"
@@ -51,6 +80,7 @@ else
         fi
         printf '%s  %s\n' "$ARCHIVE_SHA256" "$archive" | sha256sum -c - >/dev/null
     fi
+    validate_archive "$archive"
     tar -xzf "$archive" -C "$TMP_DIR"
     SRC_DIR=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)
 fi

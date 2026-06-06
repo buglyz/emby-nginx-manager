@@ -9,3 +9,4 @@ python3 -m unittest discover -s tests
 sh -n install.sh bin/emby
 bash -n deploy.sh
 sh tests/dry-run.sh
+sh tests/install-archive.sh

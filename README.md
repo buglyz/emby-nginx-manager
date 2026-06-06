@@ -225,7 +225,7 @@ Run the local checks:
 scripts/self-check.sh
 ```
 
-The self-check compiles `webui.py`, runs Python unit tests, validates shell syntax, and performs dry-run render tests with a temporary Nginx config.
+The self-check compiles `webui.py`, runs Python unit tests, validates shell syntax, performs dry-run render tests with a temporary Nginx config, and checks installer archive safety.
 
 GitHub Actions runs the same check on push and pull request.
 
@@ -238,4 +238,4 @@ GitHub Actions runs the same check on push and pull request.
 - `conf.d/p.example.com.no_tls.conf`: HTTP-only Emby proxy template
 - `bin/emby`: optional shortcut wrapper
 - `scripts/self-check.sh`: local validation entrypoint
-- `tests/`: unit and dry-run tests
+- `tests/`: unit, dry-run, and installer archive safety tests
