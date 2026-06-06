@@ -229,6 +229,39 @@ class RestorePathTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(conf.read_text(encoding="utf-8"), "# nre_emby_managed=true\nserver { listen 443 ssl; }\n")
 
+    def test_restore_rejects_symlink_targets(self):
+        original_env = webui.os.environ.get("NGINX_CONF_DIR")
+        original_run = webui.run_system_command
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf_dir = root / "sites-enabled"
+            conf_dir.mkdir()
+            outside = root / "outside.conf"
+            conf = conf_dir / "emby.example.com.conf"
+            outside.write_text("original\n", encoding="utf-8")
+            conf.symlink_to(outside)
+            arcname = str(conf).lstrip("/")
+            backup_dir, name = self.make_archive(
+                {
+                    arcname: "# nre_emby_managed=true\nserver { listen 443 ssl; }\n",
+                }
+            )
+
+            try:
+                webui.os.environ["NGINX_CONF_DIR"] = str(conf_dir)
+                webui.run_system_command = lambda *args, **kwargs: {"ok": True, "output": ""}
+                with self.assertRaises(webui.WebUIError):
+                    webui.restore_backup_archive(backup_dir, name)
+            finally:
+                webui.run_system_command = original_run
+                if original_env is None:
+                    webui.os.environ.pop("NGINX_CONF_DIR", None)
+                else:
+                    webui.os.environ["NGINX_CONF_DIR"] = original_env
+
+            self.assertTrue(conf.is_symlink())
+            self.assertEqual(outside.read_text(encoding="utf-8"), "original\n")
+
 
 class BackupArchiveTests(unittest.TestCase):
     def test_collect_backup_files_uses_configured_nginx_conf_dir(self):

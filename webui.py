@@ -1709,6 +1709,23 @@ def restore_mode_for_arcname(arcname):
     return 0o600
 
 
+def replace_regular_file(src, dest, mode):
+    tmp_dest = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent, delete=False) as handle:
+            tmp_dest = Path(handle.name)
+            with src.open("rb") as source:
+                shutil.copyfileobj(source, handle)
+        os.chmod(tmp_dest, mode)
+        os.replace(tmp_dest, dest)
+    finally:
+        if tmp_dest is not None:
+            try:
+                tmp_dest.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def restore_backup_archive(backup_dir, name):
     name = clean_text_field(name, label="备份名称", required=True, max_len=128)
     if not BACKUP_NAME_RE.fullmatch(name):
@@ -1738,20 +1755,22 @@ def restore_backup_archive(backup_dir, name):
             rel = Path(member.name)
             dest = Path("/") / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.exists():
+            if dest.exists() or dest.is_symlink():
+                if dest.is_symlink() or not dest.is_file():
+                    raise WebUIError(f"恢复目标不是普通文件: {dest}")
                 old = backup_existing / rel
                 old.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(dest, old)
                 rollback.append((dest, old))
             else:
                 created.append(dest)
-            shutil.copy2(src, dest)
+            replace_regular_file(src, dest, restore_mode_for_arcname(member.name))
             restored.append(str(dest))
 
         test_result = run_system_command(["nginx", "-t"], timeout=60)
         if not test_result["ok"]:
             for dest, old in rollback:
-                shutil.copy2(old, dest)
+                replace_regular_file(old, dest, restore_mode_for_arcname(backup_arcname(dest)))
             for dest in created:
                 try:
                     dest.unlink()
