@@ -102,18 +102,25 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
-LOCK_DIR="${NRE_LOCK_DIR:-/tmp/emby-nginx-manager.lockdir}"
+LOCK_DIR="${NRE_LOCK_DIR:-/run/lock/emby-nginx-manager.lockdir}"
 LOCK_WAIT_SECONDS="${NRE_LOCK_WAIT_SECONDS:-30}"
 LOCK_HELD=""
 
 acquire_lock() {
-    local waited=0 pid
+    local waited=0 pid owner_uid current_uid
 
     [[ -n "$LOCK_HELD" ]] && return 0
 
+    $SUDO mkdir -p "$(dirname "$LOCK_DIR")"
+    current_uid=$(id -u)
     log_info "等待部署锁，避免并发写入 Nginx 配置..."
     while ! $SUDO mkdir "$LOCK_DIR" 2>/dev/null; do
         pid=""
+        owner_uid=$($SUDO stat -c %u "$LOCK_DIR" 2>/dev/null || echo "")
+        if [[ "$owner_uid" != "$current_uid" && "$owner_uid" != "0" ]]; then
+            log_error "锁目录已存在但不属于当前用户: $LOCK_DIR"
+            exit 1
+        fi
         if $SUDO [ -f "$LOCK_DIR/pid" ]; then
             pid=$($SUDO cat "$LOCK_DIR/pid" 2>/dev/null || true)
         fi
@@ -128,6 +135,7 @@ acquire_lock() {
         sleep 1
         waited=$((waited + 1))
     done
+    $SUDO chmod 700 "$LOCK_DIR" 2>/dev/null || true
     printf '%s\n' "$$" | $SUDO tee "$LOCK_DIR/pid" > /dev/null
     LOCK_HELD="mkdir"
 
@@ -1510,6 +1518,10 @@ install_dependencies() {
 
     log_info "检查 Nginx..."
     if ! command -v nginx &> /dev/null; then
+        if [[ ! "${NRE_INSTALL_NGINX:-0}" =~ ^(1|yes|true|on)$ ]]; then
+            log_error "Nginx 未安装。请先手动安装 Nginx，或设置 NRE_INSTALL_NGINX=1 允许脚本安装。"
+            exit 1
+        fi
         log_info "Nginx 未安装，正在从官方源为 '$OS_NAME' 安装..."
 
         case "$OS_NAME" in

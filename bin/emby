@@ -108,6 +108,15 @@ KillMode=mixed
 TimeoutStopSec=15
 NoNewPrivileges=true
 UMask=0077
+PrivateTmp=true
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

@@ -98,7 +98,8 @@ Useful environment variables:
 | `ACME_HTTP_WEBROOT` | Override the HTTP-01 webroot. Defaults to `/usr/share/nginx/html`. |
 | `ACME_INSTALL_SHA256` | Optional SHA256 for the downloaded `acme.sh` installer. |
 | `NRE_ALLOW_REMOTE_TEMPLATE=1` | Allow a remote `--template-domain-config` URL. Remote templates are blocked by default. |
-| `NRE_LOCK_DIR` | Override the deploy/remove lock directory. Defaults to `/tmp/emby-nginx-manager.lockdir`. |
+| `NRE_INSTALL_NGINX=1` | Allow the script to install Nginx if it is missing. Disabled by default because it can modify package repositories. |
+| `NRE_LOCK_DIR` | Override the deploy/remove lock directory. Defaults to `/run/lock/emby-nginx-manager.lockdir`. |
 
 ## WebUI
 
@@ -125,7 +126,7 @@ emby web-restart
 emby web-logs
 ```
 
-`web-install` writes `/etc/systemd/system/emby-nginx-webui.service`, creates `/etc/emby-nginx-webui.env` when missing, enables the service, and restarts it. The service listens on `127.0.0.1:8765` by default and keeps the internal access key out of the URL.
+`web-install` writes `/etc/systemd/system/emby-nginx-webui.service`, creates `/etc/emby-nginx-webui.env` when missing, enables the service, and restarts it. The service listens on `127.0.0.1:8765` by default, keeps the internal access key out of the URL, and enables a conservative systemd sandbox (`PrivateTmp`, `ProtectHome`, kernel/control-group protections, and related hardening flags).
 
 Publish the WebUI through Nginx:
 
@@ -135,7 +136,7 @@ emby web-proxy-install emby.example.com
 
 `web-proxy-install` generates a managed Nginx reverse proxy for the local WebUI, keeps or creates `/etc/nginx/.htpasswd-emby-webui`, injects the private WebUI key through `/etc/nginx/snippets/emby-webui-internal-key.conf`, tests Nginx, and reloads it. It requires an existing certificate at `/etc/nginx/ssl/<domain>/fullchain.pem` or `/etc/nginx/certs/<domain>/cert`. If the target Nginx config already exists and is not managed by this command, add `--force` after checking the existing file.
 
-The first successful WebUI page load stores the access code in an HttpOnly browser cookie and removes it from the address bar. If you bind WebUI to a non-local address such as `0.0.0.0`, authentication must stay enabled. When publishing the WebUI behind Nginx, keep Nginx authentication enabled and inject a private `X-Emby-Webui-Key` header to the local WebUI service.
+The first successful WebUI page load stores the access code in an HttpOnly browser cookie and removes it from the address bar. If you bind WebUI to a non-local address such as `0.0.0.0`, authentication must stay enabled. When publishing the WebUI behind Nginx, keep Nginx authentication enabled and inject a private `X-Emby-Webui-Key` header to the local WebUI service. Mutating WebUI API requests require either a same-origin request, the internal key header, or the WebUI frontend request header.
 
 WebUI environment variables:
 
@@ -150,7 +151,7 @@ WebUI environment variables:
 
 The WebUI records recent preview, deploy, remove, doctor, backup, and restore operations. Long-running operations are serialized so multiple browser sessions cannot write Nginx at the same time. Backups are stored under `/var/backups/emby-nginx-manager` and cover managed Emby Nginx configs plus WebUI service/proxy files. Backups do not include the internal WebUI access key. Restore actions preview the file list before applying changes, and old backups are pruned after the newest 20 by default. Set `EMBY_WEBUI_BACKUP_KEEP` to change the retention count.
 
-Backups also include certificate files referenced from managed configs when they are under `/etc/nginx/certs/<domain>/cert`, `/etc/nginx/certs/<domain>/key`, `/etc/nginx/ssl/<domain>/fullchain.pem`, or `/etc/nginx/ssl/<domain>/privkey.pem`. Backup archives are mode `600`; protect them because they may contain TLS private keys.
+Backups also include certificate files referenced from managed configs when they are under `/etc/nginx/certs/<domain>/cert`, `/etc/nginx/certs/<domain>/key`, `/etc/nginx/ssl/<domain>/fullchain.pem`, or `/etc/nginx/ssl/<domain>/privkey.pem`. Backup archives are mode `600`; protect them because they may contain TLS private keys. Restore ignores archive-provided modes and applies fixed permissions by path, such as `0600` for private keys and internal secret files.
 
 Quick WebUI self-check:
 
@@ -211,6 +212,7 @@ The script also installs a managed `nre_emby_safe` log format under Nginx `conf.
 - The WebUI service performs privileged Nginx operations. Keep it bound to `127.0.0.1` unless it is protected by HTTPS, Basic Auth, and the internal `X-Emby-Webui-Key` header.
 - Redirect proxying is disabled by default. Only enable `--proxy-redirect` when the backend requires it.
 - Remote Nginx templates are blocked by default because templates are rendered into live Nginx config.
+- Nginx installation is not automatic by default. Set `NRE_INSTALL_NGINX=1` only on hosts where package repository changes are acceptable.
 - The installer can download from `main`; use pinned archives and checksums for production hosts.
 - Backup archives can include TLS private keys. Store and transfer them as secrets.
 

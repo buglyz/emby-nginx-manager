@@ -685,7 +685,8 @@ HTML = r"""<!doctype html>
 
     async function api(path, options = {}) {
       const headers = Object.assign({
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'EmbyNginxManager'
       }, options.headers || {});
       const response = await fetch(path, Object.assign({}, options, { headers }));
       const text = await response.text();
@@ -1510,6 +1511,25 @@ def restore_allowed_path(arcname):
     return False
 
 
+def restore_mode_for_arcname(arcname):
+    if arcname in {
+        "etc/emby-nginx-webui.env",
+        "etc/nginx/snippets/emby-webui-internal-key.conf",
+    }:
+        return 0o600
+    if cert_backup_arcname_allowed(arcname):
+        if arcname.endswith("/key") or arcname.endswith("/privkey.pem"):
+            return 0o600
+        return 0o644
+    if arcname == "etc/nginx/.htpasswd-emby-webui":
+        return 0o640
+    if arcname == "etc/systemd/system/emby-nginx-webui.service":
+        return 0o644
+    if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
+        return 0o640
+    return 0o600
+
+
 def restore_backup_archive(backup_dir, name):
     name = clean_text_field(name, label="备份名称", required=True, max_len=128)
     if not BACKUP_NAME_RE.fullmatch(name):
@@ -1543,7 +1563,7 @@ def restore_backup_archive(backup_dir, name):
                     raise WebUIError(f"无法读取备份文件: {member.name}")
                 with src.open("wb") as output:
                     shutil.copyfileobj(handle, output)
-                os.chmod(src, member.mode & 0o777 or 0o600)
+                os.chmod(src, restore_mode_for_arcname(member.name))
 
         backup_existing = tmp_root_path / "existing"
         for src in sorted(tmp_root_path.glob("etc/**/*")):
@@ -2053,10 +2073,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def same_origin_request(self):
         origin = self.headers.get("Origin", "")
-        if not origin:
+        if origin:
+            parsed = urlparse(origin)
+            return parsed.netloc == self.headers.get("Host", "")
+        fetch_site = self.headers.get("Sec-Fetch-Site", "")
+        if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+            return False
+        if self.headers.get("X-Requested-With", "") == "EmbyNginxManager":
             return True
-        parsed = urlparse(origin)
-        return parsed.netloc == self.headers.get("Host", "")
+        header_key = self.headers.get("X-Emby-Webui-Key", "")
+        return bool(self.server.access_key and header_key == self.server.access_key)
 
     def read_json_body(self):
         try:
