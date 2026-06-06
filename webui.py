@@ -1163,7 +1163,7 @@ def run_command(script, args, timeout):
             "ok": False,
             "exit_code": 127,
             "command": shell_quote(command),
-            "output": strip_ansi(str(exc)),
+            "output": redact_sensitive_text(strip_ansi(str(exc))),
             "duration_ms": int((time.time() - started) * 1000),
         }
 
@@ -1189,7 +1189,7 @@ def run_command(script, args, timeout):
             "ok": False,
             "exit_code": 124,
             "command": shell_quote(command),
-            "output": strip_ansi(output + "\nCommand timed out."),
+            "output": redact_sensitive_text(strip_ansi(output + "\nCommand timed out.")),
             "duration_ms": int((time.time() - started) * 1000),
         }
 
@@ -1198,7 +1198,7 @@ def run_command(script, args, timeout):
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
         "command": shell_quote(command),
-        "output": strip_ansi(output).strip(),
+        "output": redact_sensitive_text(strip_ansi(output)).strip(),
         "duration_ms": int((time.time() - started) * 1000),
     }
 
@@ -1218,7 +1218,7 @@ def run_system_command(command, timeout=60):
             "ok": proc.returncode == 0,
             "exit_code": proc.returncode,
             "command": shell_quote(command),
-            "output": strip_ansi(output).strip(),
+            "output": redact_sensitive_text(strip_ansi(output)).strip(),
             "duration_ms": int((time.time() - started) * 1000),
         }
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1233,7 +1233,7 @@ def run_system_command(command, timeout=60):
             "ok": False,
             "exit_code": exit_code,
             "command": shell_quote(command),
-            "output": strip_ansi(output).strip(),
+            "output": redact_sensitive_text(strip_ansi(output)).strip(),
             "duration_ms": int((time.time() - started) * 1000),
         }
 
@@ -1261,6 +1261,7 @@ def redact_sensitive_text(value):
         r"\b([A-Za-z0-9_.-]*(?:TOKEN|PASSWORD|SECRET|ACCESS_KEY|WEBUI_KEY)[A-Za-z0-9_.-]*=)\S+",
         r"\1<redacted>",
         text,
+        flags=re.I,
     )
     text = re.sub(
         r'("?[A-Za-z0-9_.-]*(?:token|password|secret|access_key|webui_key)[A-Za-z0-9_.-]*"?\s*:\s*")[^"]*(")',

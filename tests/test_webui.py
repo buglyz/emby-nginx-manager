@@ -612,6 +612,22 @@ class RedactionTests(unittest.TestCase):
         self.assertIn("<redacted>", entry["target"])
         self.assertIn("<redacted>", entry["command"])
 
+    def test_run_command_redacts_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "deploy.sh"
+            script.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "token=abc password=secret X-Emby-Webui-Key: hidden"\n',
+                encoding="utf-8",
+            )
+
+            result = webui.run_command(script, [], timeout=10)
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("abc", result["output"])
+        self.assertNotIn("secret", result["output"])
+        self.assertNotIn("hidden", result["output"])
+        self.assertIn("<redacted>", result["output"])
+
 
 class StaticSafetyTests(unittest.TestCase):
     def test_webui_does_not_reprint_result_after_refresh(self):
