@@ -111,6 +111,7 @@ redact_sensitive_stream() {
 LOCK_DIR="${NRE_LOCK_DIR:-/run/lock/emby-nginx-manager.lockdir}"
 LOCK_WAIT_SECONDS="${NRE_LOCK_WAIT_SECONDS:-30}"
 LOCK_HELD=""
+MAX_TEMPLATE_BYTES="${NRE_MAX_TEMPLATE_BYTES:-262144}"
 
 validate_lock_dir() {
     case "$LOCK_DIR" in
@@ -536,6 +537,22 @@ verify_sha256() {
         return 1
     fi
     printf '%s  %s\n' "$expected" "$file_path" | sha256sum -c - >/dev/null
+}
+
+emit_template_file() {
+    local file_path="$1"
+    local size
+
+    if [ -L "$file_path" ] || [ ! -f "$file_path" ]; then
+        log_error "模板必须是普通文件，且不能是符号链接: $file_path"
+        return 1
+    fi
+    size=$(stat -c %s "$file_path" 2>/dev/null || echo 0)
+    if [[ ! "$size" =~ ^[0-9]+$ ]] || ((size > MAX_TEMPLATE_BYTES)); then
+        log_error "模板文件过大: $file_path"
+        return 1
+    fi
+    cat "$file_path"
 }
 
 # --- acme.sh: 判断证书是否可用 ---
@@ -1754,9 +1771,9 @@ get_template_content() {
                 log_error "出于安全考虑，默认不加载远程 Nginx 模板。确认可信后设置 NRE_ALLOW_REMOTE_TEMPLATE=1。"
                 return 1
             fi
-            curl -fsL "$template_domain_config_source"
-        elif [ -f "$template_domain_config_source" ]; then
-            cat "$template_domain_config_source"
+            curl -fsL --max-filesize "$MAX_TEMPLATE_BYTES" "$template_domain_config_source"
+        elif [ -e "$template_domain_config_source" ]; then
+            emit_template_file "$template_domain_config_source"
         else
             log_error "指定的模板无效。"
             return 1
@@ -1767,10 +1784,10 @@ get_template_content() {
         local_tpl="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/conf.d/$tpl_name"
         if [ -f "$local_tpl" ]; then
             log_info "使用本地模板: $local_tpl"
-            cat "$local_tpl"
+            emit_template_file "$local_tpl"
         else
             log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..."
-            curl -fsL "$CONF_HOME/conf.d/$tpl_name"
+            curl -fsL --max-filesize "$MAX_TEMPLATE_BYTES" "$CONF_HOME/conf.d/$tpl_name"
         fi
     fi
 }

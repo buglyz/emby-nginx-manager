@@ -74,6 +74,16 @@ if run_dry -y https://emby.example.com -r 'http://[::::]:8096' >/dev/null 2>&1; 
     echo "invalid IPv6 backend was accepted" >&2
     exit 1
 fi
+cat > "$TMP_DIR/template-target.conf" <<'EOF'
+server {
+    listen ${you_frontend_port};
+}
+EOF
+ln -s "$TMP_DIR/template-target.conf" "$TMP_DIR/template-link.conf"
+if run_dry -y https://template-link.example.com -r http://127.0.0.1:8096 -c "$TMP_DIR/template-link.conf" >/dev/null 2>&1; then
+    echo "symlink local template was accepted" >&2
+    exit 1
+fi
 touch "$TMP_DIR/outside.conf"
 ln -s "$TMP_DIR/outside.conf" "$CONF_DIR/symlink.example.com-443.conf"
 if run_dry -y https://symlink.example.com -r http://127.0.0.1:8096 >/dev/null 2>&1; then

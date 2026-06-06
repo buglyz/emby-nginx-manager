@@ -676,6 +676,15 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('拒绝写入非普通 Nginx 配置文件', deploy)
         self.assertIn('拒绝备份符号链接配置文件', deploy)
 
+    def test_deploy_limits_template_sources(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn('MAX_TEMPLATE_BYTES="${NRE_MAX_TEMPLATE_BYTES:-262144}"', deploy)
+        self.assertIn("emit_template_file()", deploy)
+        self.assertIn('[ -L "$file_path" ] || [ ! -f "$file_path" ]', deploy)
+        self.assertIn('curl -fsL --max-filesize "$MAX_TEMPLATE_BYTES"', deploy)
+
     def test_webui_proxy_honors_configured_nginx_conf_dir(self):
         root = Path(__file__).resolve().parents[1]
         wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")
