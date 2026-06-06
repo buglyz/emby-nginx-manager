@@ -10,3 +10,4 @@ sh -n install.sh bin/emby
 bash -n deploy.sh
 sh tests/dry-run.sh
 sh tests/install-archive.sh
+sh tests/wrapper.sh

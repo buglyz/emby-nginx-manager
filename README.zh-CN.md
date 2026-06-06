@@ -235,7 +235,7 @@ emby --dry-run -y https://emby.example.com -r http://127.0.0.1:8096 --proxy-redi
 scripts/self-check.sh
 ```
 
-检查内容包括 `webui.py` 编译、Python 单元测试、Shell 语法检查、使用临时 Nginx 配置的 dry-run 渲染测试，以及安装归档安全检查。
+检查内容包括 `webui.py` 编译、Python 单元测试、Shell 语法检查、使用临时 Nginx 配置的 dry-run 渲染测试、安装归档安全检查和包装脚本校验。
 
 GitHub Actions 会在 push 和 pull request 时运行同一套检查。
 
@@ -248,4 +248,4 @@ GitHub Actions 会在 push 和 pull request 时运行同一套检查。
 - `conf.d/p.example.com.no_tls.conf`: HTTP-only Emby 反代模板。
 - `bin/emby`: 快捷命令包装脚本。
 - `scripts/self-check.sh`: 本地验证入口。
-- `tests/`: 单元测试、dry-run 测试和安装归档安全测试。
+- `tests/`: 单元测试、dry-run 测试、安装归档安全测试和包装脚本测试。

@@ -45,6 +45,23 @@ need_systemctl() {
     fi
 }
 
+validate_service_name() {
+    case "$SERVICE_NAME" in
+        *.service)
+            ;;
+        *)
+            echo "错误: WebUI 服务名必须以 .service 结尾。" >&2
+            exit 1
+            ;;
+    esac
+    case "$SERVICE_NAME" in
+        ""|*..*|*[!A-Za-z0-9_.@-]*)
+            echo "错误: WebUI 服务名格式无效。" >&2
+            exit 1
+            ;;
+    esac
+}
+
 setup_sudo() {
     SUDO=""
     if [ "$(id -u)" -ne 0 ]; then
@@ -81,6 +98,7 @@ ensure_webui_env() {
 install_web_service() {
     setup_sudo
     need_systemctl
+    validate_service_name
     need_python
     WEBUI=$(resolve_webui)
     PYTHON_BIN=$(command -v python3)
@@ -142,18 +160,21 @@ service_action() {
     action="$1"
     setup_sudo
     need_systemctl
+    validate_service_name
     $SUDO systemctl "$action" "$SERVICE_NAME"
 }
 
 service_status() {
     setup_sudo
     need_systemctl
+    validate_service_name
     $SUDO systemctl status "$SERVICE_NAME" --no-pager
 }
 
 service_logs() {
     setup_sudo
     need_systemctl
+    validate_service_name
     if [ "$#" -eq 0 ]; then
         set -- -n 100 --no-pager
     fi
