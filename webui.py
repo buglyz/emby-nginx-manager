@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 import argparse
+import io
 import ipaddress
 import json
 import os
 import re
 import secrets
 import signal
+import shutil
 import string
 import subprocess
 import sys
+import tarfile
+import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,8 +25,23 @@ ACCESS_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{8,128}$")
 DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DNS_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 URL_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
+BACKUP_NAME_RE = re.compile(r"^emby-nginx-manager-[0-9]{14}\.tar\.gz$")
 MAX_BODY_BYTES = 64 * 1024
+HISTORY_LIMIT = 200
+HISTORY_OUTPUT_TAIL = 4000
 COOKIE_NAME = "emby_webui_access"
+DEFAULT_STATE_DIR = Path(os.environ.get("EMBY_WEBUI_STATE_DIR", "/var/lib/emby-nginx-manager"))
+DEFAULT_BACKUP_DIR = Path(os.environ.get("EMBY_WEBUI_BACKUP_DIR", "/var/backups/emby-nginx-manager"))
+MANAGED_CONFIG_MARKERS = (
+    "nre_emby_managed=true",
+    "managed_by=nginx-reverse-emby-deploy",
+    "nre_webui_managed=true",
+    "managed_by=emby-nginx-manager-webui",
+)
+RESTORE_SKIP_ARCNAMES = {
+    "etc/emby-nginx-webui.env",
+    "etc/nginx/snippets/emby-webui-internal-key.conf",
+}
 
 
 HTML = r"""<!doctype html>
@@ -555,6 +575,61 @@ HTML = r"""<!doctype html>
 
       <section>
         <div class="panel-head">
+          <h2>备份恢复</h2>
+          <div class="toolbar">
+            <button class="secondary" id="refresh-backups" type="button">刷新</button>
+            <button class="primary" id="create-backup" type="button">备份</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>备份</th>
+                  <th>时间</th>
+                  <th>大小</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="backup-body">
+                <tr><td class="empty-cell" colspan="4">加载中</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="panel-head">
+          <h2>操作历史</h2>
+          <div class="toolbar">
+            <button class="secondary" id="refresh-history" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>操作</th>
+                  <th>状态</th>
+                  <th>目标</th>
+                  <th>耗时</th>
+                  <th>详情</th>
+                </tr>
+              </thead>
+              <tbody id="history-body">
+                <tr><td class="empty-cell" colspan="6">加载中</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="panel-head">
           <h2>命令输出</h2>
           <div class="toolbar">
             <button class="secondary" id="copy-output" type="button">复制</button>
@@ -576,6 +651,8 @@ HTML = r"""<!doctype html>
     const statusEl = document.getElementById('status');
     const outputEl = document.getElementById('output');
     const configBody = document.getElementById('config-body');
+    const backupBody = document.getElementById('backup-body');
+    const historyBody = document.getElementById('history-body');
 
     function setStatus(text, state = 'ready') {
       statusEl.textContent = text;
@@ -648,6 +725,38 @@ HTML = r"""<!doctype html>
       return 'ok';
     }
 
+    function formatTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+
+    function formatBytes(value) {
+      const size = Number(value || 0);
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    function actionText(value) {
+      return {
+        preview: '预览',
+        deploy: '写入',
+        remove: '删除',
+        doctor: '健康检查',
+        backup: '备份',
+        restore: '恢复'
+      }[value] || value || '-';
+    }
+
+    function renderStatusBadge(ok, exitCode) {
+      const badge = document.createElement('span');
+      badge.className = `badge ${ok ? 'ok' : 'danger'}`;
+      badge.textContent = ok ? '成功' : `失败${typeof exitCode === 'number' ? ` ${exitCode}` : ''}`;
+      return badge;
+    }
+
     function renderConfigs(rows) {
       if (!rows.length) {
         configBody.innerHTML = '<tr><td class="empty-cell" colspan="6">暂无脚本管理的配置</td></tr>';
@@ -680,6 +789,84 @@ HTML = r"""<!doctype html>
       }));
     }
 
+    function renderBackups(rows) {
+      if (!rows.length) {
+        backupBody.innerHTML = '<tr><td class="empty-cell" colspan="4">暂无备份</td></tr>';
+        return;
+      }
+      backupBody.replaceChildren(...rows.map((row) => {
+        const tr = document.createElement('tr');
+        [
+          { value: row.name, mono: true },
+          { value: formatTime(row.mtime) },
+          { value: formatBytes(row.size), mono: true }
+        ].forEach((cell) => {
+          const td = document.createElement('td');
+          if (cell.mono) td.classList.add('mono');
+          td.textContent = cell.value || '-';
+          tr.appendChild(td);
+        });
+        const actionTd = document.createElement('td');
+        const button = document.createElement('button');
+        button.className = 'secondary';
+        button.type = 'button';
+        button.textContent = '恢复';
+        button.addEventListener('click', () => restoreBackup(row.name));
+        actionTd.appendChild(button);
+        tr.appendChild(actionTd);
+        return tr;
+      }));
+    }
+
+    function renderHistory(rows) {
+      if (!rows.length) {
+        historyBody.innerHTML = '<tr><td class="empty-cell" colspan="6">暂无历史</td></tr>';
+        return;
+      }
+      historyBody.replaceChildren(...rows.map((row) => {
+        const tr = document.createElement('tr');
+        [
+          { value: formatTime(row.time), mono: true },
+          { value: actionText(row.action) }
+        ].forEach((cell) => {
+          const td = document.createElement('td');
+          if (cell.mono) td.classList.add('mono');
+          td.textContent = cell.value || '-';
+          tr.appendChild(td);
+        });
+        const statusTd = document.createElement('td');
+        statusTd.appendChild(renderStatusBadge(row.ok, row.exit_code));
+        tr.appendChild(statusTd);
+
+        const targetTd = document.createElement('td');
+        targetTd.classList.add('mono');
+        targetTd.textContent = row.target || '-';
+        tr.appendChild(targetTd);
+
+        const durationTd = document.createElement('td');
+        durationTd.classList.add('mono');
+        durationTd.textContent = typeof row.duration_ms === 'number' ? `${row.duration_ms} ms` : '-';
+        tr.appendChild(durationTd);
+
+        const detailTd = document.createElement('td');
+        const button = document.createElement('button');
+        button.className = 'secondary';
+        button.type = 'button';
+        button.textContent = '查看';
+        button.addEventListener('click', () => {
+          printOutput({
+            ok: row.ok,
+            exit_code: row.exit_code,
+            command: row.command || `${actionText(row.action)} ${row.target || ''}`.trim(),
+            output: row.message || ''
+          });
+        });
+        detailTd.appendChild(button);
+        tr.appendChild(detailTd);
+        return tr;
+      }));
+    }
+
     async function refreshList(showOutput = true) {
       setBusy('加载中');
       try {
@@ -694,7 +881,71 @@ HTML = r"""<!doctype html>
       }
     }
 
+    async function refreshBackups(showOutput = false) {
+      setBusy('加载备份');
+      try {
+        const result = await api('/api/backups');
+        renderBackups(result.backups || []);
+        if (showOutput) printOutput({ ok: true, exit_code: 0, command: 'GET /api/backups', output: JSON.stringify(result.backups || [], null, 2) });
+        setReady('已加载');
+      } catch (error) {
+        outputEl.textContent = error.message;
+        backupBody.innerHTML = '<tr><td class="empty-cell" colspan="4">加载失败</td></tr>';
+        setReady('错误');
+      }
+    }
+
+    async function refreshHistory(showOutput = false) {
+      setBusy('加载历史');
+      try {
+        const result = await api('/api/history');
+        renderHistory(result.history || []);
+        if (showOutput) printOutput({ ok: true, exit_code: 0, command: 'GET /api/history', output: JSON.stringify(result.history || [], null, 2) });
+        setReady('已加载');
+      } catch (error) {
+        outputEl.textContent = error.message;
+        historyBody.innerHTML = '<tr><td class="empty-cell" colspan="6">加载失败</td></tr>';
+        setReady('错误');
+      }
+    }
+
+    async function restoreBackup(name) {
+      if (!window.confirm(`确认恢复备份 ${name}？`)) return;
+      setBusy('恢复中');
+      try {
+        const result = await api('/api/restore', {
+          method: 'POST',
+          body: JSON.stringify({ name, confirm_restore: true })
+        });
+        printOutput(result);
+        await refreshList(false);
+        await refreshHistory(false);
+        setReady(result.ok ? '完成' : '失败');
+      } catch (error) {
+        outputEl.textContent = error.message;
+        await refreshHistory(false);
+        setReady('错误');
+      }
+    }
+
     document.getElementById('refresh-list').addEventListener('click', () => refreshList(true));
+    document.getElementById('refresh-backups').addEventListener('click', () => refreshBackups(true));
+    document.getElementById('refresh-history').addEventListener('click', () => refreshHistory(true));
+
+    document.getElementById('create-backup').addEventListener('click', async () => {
+      setBusy('备份中');
+      try {
+        const result = await api('/api/backup', { method: 'POST', body: '{}' });
+        printOutput(result);
+        await refreshBackups(false);
+        await refreshHistory(false);
+        setReady('完成');
+      } catch (error) {
+        outputEl.textContent = error.message;
+        await refreshHistory(false);
+        setReady('错误');
+      }
+    });
 
     document.getElementById('run-status').addEventListener('click', async () => {
       setBusy('检查中');
@@ -746,9 +997,11 @@ HTML = r"""<!doctype html>
       try {
         const result = await api('/api/doctor', { method: 'POST', body: '{}' });
         printOutput(result);
+        await refreshHistory(false);
         setReady(result.exit_code === 0 ? '正常' : '检查失败');
       } catch (error) {
         outputEl.textContent = error.message;
+        await refreshHistory(false);
         setReady('错误');
       }
     });
@@ -780,10 +1033,12 @@ HTML = r"""<!doctype html>
         const result = await api('/api/deploy', { method: 'POST', body: JSON.stringify(payload) });
         printOutput(result);
         await refreshList(false);
+        await refreshHistory(false);
         printOutput(result);
         setReady(result.exit_code === 0 ? '完成' : '失败');
       } catch (error) {
         outputEl.textContent = error.message;
+        await refreshHistory(false);
         setReady('错误');
       }
     });
@@ -806,15 +1061,19 @@ HTML = r"""<!doctype html>
         const result = await api('/api/remove', { method: 'POST', body: JSON.stringify(payload) });
         printOutput(result);
         await refreshList(false);
+        await refreshHistory(false);
         printOutput(result);
         setReady(result.exit_code === 0 ? '完成' : '失败');
       } catch (error) {
         outputEl.textContent = error.message;
+        await refreshHistory(false);
         setReady('错误');
       }
     });
 
     refreshList();
+    refreshBackups();
+    refreshHistory();
   </script>
 </body>
 </html>
@@ -906,6 +1165,123 @@ def run_command(script, args, timeout):
     }
 
 
+def run_system_command(command, timeout=60):
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=command_env(),
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        return {
+            "ok": proc.returncode == 0,
+            "exit_code": proc.returncode,
+            "command": shell_quote(command),
+            "output": strip_ansi(output).strip(),
+            "duration_ms": int((time.time() - started) * 1000),
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        output = ""
+        if isinstance(exc, subprocess.TimeoutExpired):
+            output = (exc.stdout or "") + (exc.stderr or "")
+            exit_code = 124
+        else:
+            output = str(exc)
+            exit_code = 127
+        return {
+            "ok": False,
+            "exit_code": exit_code,
+            "command": shell_quote(command),
+            "output": strip_ansi(output).strip(),
+            "duration_ms": int((time.time() - started) * 1000),
+        }
+
+
+def utc_timestamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def safe_output_tail(output):
+    text = strip_ansi(str(output or "")).strip()
+    text = re.sub(r"([?&]key=)[^ &\"\n]+", r"\1<redacted>", text)
+    text = re.sub(r"(X-Emby-Webui-Key:\s*)\S+", r"\1<redacted>", text, flags=re.I)
+    if len(text) > HISTORY_OUTPUT_TAIL:
+        text = text[-HISTORY_OUTPUT_TAIL:]
+    return text
+
+
+def safe_history_text(value, max_len=512):
+    text = str(value or "").strip()
+    text = "".join(ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in text)
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > max_len:
+        text = text[: max_len - 3] + "..."
+    return text
+
+
+def action_target(action, payload):
+    payload = payload or {}
+    if action in {"deploy", "preview"}:
+        frontend = safe_history_text(payload.get("frontend", ""), max_len=253)
+        backend = safe_history_text(payload.get("backend", ""), max_len=512)
+        if frontend and backend:
+            return f"{frontend} -> {backend}"
+        return frontend or backend
+    if action == "remove":
+        return safe_history_text(payload.get("target", ""), max_len=512)
+    if action == "restore":
+        return safe_history_text(payload.get("name", ""), max_len=128)
+    return ""
+
+
+def history_entry(action, result, payload=None):
+    return {
+        "time": utc_timestamp(),
+        "action": action,
+        "ok": bool(result.get("ok")),
+        "exit_code": result.get("exit_code"),
+        "duration_ms": result.get("duration_ms", 0),
+        "target": action_target(action, payload),
+        "command": result.get("command", ""),
+        "message": safe_output_tail(result.get("output", "")),
+    }
+
+
+def read_history(history_file):
+    if not history_file.is_file():
+        return []
+    rows = []
+    with history_file.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+    return rows[-HISTORY_LIMIT:]
+
+
+def append_history(history_file, lock, entry):
+    with lock:
+        history_file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        rows = read_history(history_file)
+        rows.append(entry)
+        rows = rows[-HISTORY_LIMIT:]
+        tmp = history_file.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, history_file)
+
+
 def parse_config_rows(output):
     rows = []
     for raw_line in output.splitlines():
@@ -927,6 +1303,199 @@ def parse_config_rows(output):
             }
         )
     return rows
+
+
+def file_has_any_marker(path, markers):
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return any(marker in text for marker in markers)
+
+
+def collect_backup_files():
+    files = []
+    conf_dir = Path("/etc/nginx/conf.d")
+    if conf_dir.is_dir():
+        for path in sorted(conf_dir.glob("*.conf")):
+            if file_has_any_marker(path, MANAGED_CONFIG_MARKERS):
+                files.append(path)
+
+    for path in (
+        Path("/etc/nginx/.htpasswd-emby-webui"),
+        Path("/etc/systemd/system/emby-nginx-webui.service"),
+    ):
+        if path.is_file():
+            files.append(path)
+
+    unique = []
+    seen = set()
+    for path in files:
+        resolved = str(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(path)
+    return unique
+
+
+def backup_arcname(path):
+    return str(path).lstrip("/")
+
+
+def create_backup_archive(backup_dir):
+    backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    name = f"emby-nginx-manager-{time.strftime('%Y%m%d%H%M%S')}.tar.gz"
+    final_path = backup_dir / name
+    tmp_path = backup_dir / f".{name}.tmp"
+    files = collect_backup_files()
+    manifest = {
+        "created_at": utc_timestamp(),
+        "files": [str(path) for path in files],
+    }
+    manifest_data = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+
+    with tarfile.open(tmp_path, "w:gz") as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest_data)
+        info.mtime = int(time.time())
+        info.mode = 0o600
+        tar.addfile(info, io.BytesIO(manifest_data))
+        for path in files:
+            tar.add(path, arcname=backup_arcname(path), recursive=False)
+
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, final_path)
+    return {
+        "ok": True,
+        "exit_code": 0,
+        "command": "create backup",
+        "output": f"备份完成: {final_path}\n文件数量: {len(files)}",
+        "duration_ms": 0,
+        "name": name,
+        "path": str(final_path),
+        "files": [str(path) for path in files],
+    }
+
+
+def list_backup_archives(backup_dir):
+    if not backup_dir.is_dir():
+        return []
+    rows = []
+    for path in sorted(backup_dir.glob("emby-nginx-manager-*.tar.gz"), reverse=True):
+        if not BACKUP_NAME_RE.fullmatch(path.name):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rows.append(
+            {
+                "name": path.name,
+                "size": stat.st_size,
+                "mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+            }
+        )
+    return rows
+
+
+def restore_allowed_path(arcname):
+    if arcname.startswith("/") or ".." in Path(arcname).parts:
+        return False
+    if arcname == "manifest.json":
+        return False
+    allowed_exact = {
+        "etc/nginx/snippets/emby-webui-internal-key.conf",
+        "etc/nginx/.htpasswd-emby-webui",
+        "etc/systemd/system/emby-nginx-webui.service",
+        "etc/emby-nginx-webui.env",
+    }
+    if arcname in allowed_exact:
+        return True
+    if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
+        return True
+    return False
+
+
+def restore_backup_archive(backup_dir, name):
+    name = clean_text_field(name, label="备份名称", required=True, max_len=128)
+    if not BACKUP_NAME_RE.fullmatch(name):
+        raise WebUIError("备份名称无效")
+    archive = backup_dir / name
+    if not archive.is_file():
+        raise WebUIError("备份不存在")
+
+    started = time.time()
+    restored = []
+    rollback = []
+    created = []
+    with tempfile.TemporaryDirectory(prefix="emby-nginx-restore-") as tmp_root:
+        tmp_root_path = Path(tmp_root)
+        with tarfile.open(archive, "r:gz") as tar:
+            members = []
+            for member in tar.getmembers():
+                if member.isdir() or member.name == "manifest.json":
+                    continue
+                if member.name in RESTORE_SKIP_ARCNAMES:
+                    continue
+                if not member.isfile() or not restore_allowed_path(member.name):
+                    raise WebUIError(f"备份包含不允许恢复的路径: {member.name}")
+                members.append(member)
+
+            for member in members:
+                src = tmp_root_path / member.name
+                src.parent.mkdir(parents=True, exist_ok=True)
+                handle = tar.extractfile(member)
+                if handle is None:
+                    raise WebUIError(f"无法读取备份文件: {member.name}")
+                with src.open("wb") as output:
+                    shutil.copyfileobj(handle, output)
+                os.chmod(src, member.mode & 0o777 or 0o600)
+
+        backup_existing = tmp_root_path / "existing"
+        for src in sorted(tmp_root_path.glob("etc/**/*")):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(tmp_root_path)
+            dest = Path("/") / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                old = backup_existing / rel
+                old.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dest, old)
+                rollback.append((dest, old))
+            else:
+                created.append(dest)
+            shutil.copy2(src, dest)
+            restored.append(str(dest))
+
+        test_result = run_system_command(["nginx", "-t"], timeout=60)
+        if not test_result["ok"]:
+            for dest, old in rollback:
+                shutil.copy2(old, dest)
+            for dest in created:
+                try:
+                    dest.unlink()
+                except FileNotFoundError:
+                    pass
+            raise WebUIError("恢复后的 Nginx 配置测试失败，已回滚: " + test_result.get("output", ""))
+
+    reload_result = run_system_command(["nginx", "-s", "reload"], timeout=60)
+    daemon_result = run_system_command(["systemctl", "daemon-reload"], timeout=60)
+    output = [f"恢复完成: {name}", f"文件数量: {len(restored)}"]
+    if reload_result.get("output"):
+        output.append(reload_result["output"])
+    if daemon_result.get("output"):
+        output.append(daemon_result["output"])
+    ok = reload_result["ok"] and daemon_result["ok"]
+    return {
+        "ok": ok,
+        "exit_code": 0 if ok else 1,
+        "command": f"restore backup {name}",
+        "output": "\n".join(output),
+        "duration_ms": int((time.time() - started) * 1000),
+        "name": name,
+        "files": restored,
+    }
 
 
 def shell_quote(parts):
@@ -1127,6 +1696,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_status()
         if parsed.path == "/api/list":
             return self.handle_list()
+        if parsed.path == "/api/history":
+            return self.handle_history()
+        if parsed.path == "/api/backups":
+            return self.handle_backups()
         return self.not_found()
 
     def do_POST(self):
@@ -1139,6 +1712,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_deploy()
         if parsed.path == "/api/remove":
             return self.handle_remove()
+        if parsed.path == "/api/backup":
+            return self.handle_backup()
+        if parsed.path == "/api/restore":
+            return self.handle_restore()
         return self.not_found()
 
     def handle_index(self, parsed):
@@ -1182,33 +1759,93 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.read_json_body()
         except WebUIError as exc:
+            self.record_history("doctor", {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0})
             return self.json_response(400, {"error": str(exc)})
         result = run_command(self.server.script, ["--doctor"], timeout=120)
+        self.record_history("doctor", result)
         self.json_response(200 if result["ok"] else 500, result)
 
     def handle_deploy(self):
         if not self.authorized():
             return self.json_response(403, {"error": "forbidden"})
+        payload = {}
         try:
             payload = self.read_json_body()
             args = deploy_args(payload)
         except WebUIError as exc:
+            action = "preview" if payload.get("dry_run", True) else "deploy"
+            self.record_history(action, {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}, payload)
             return self.json_response(400, {"error": str(exc)})
         result = run_command(self.server.script, args, timeout=900)
+        action = "preview" if payload.get("dry_run", True) else "deploy"
+        self.record_history(action, result, payload)
         self.json_response(200 if result["ok"] else 500, result)
 
     def handle_remove(self):
         if not self.authorized():
             return self.json_response(403, {"error": "forbidden"})
+        payload = {}
         try:
             payload = self.read_json_body()
             if not payload.get("confirm_remove"):
                 raise WebUIError("需要确认删除配置")
             target = validate_url_field(payload.get("target", ""), "删除地址", "frontend")
         except WebUIError as exc:
+            self.record_history("remove", {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}, payload)
             return self.json_response(400, {"error": str(exc)})
         result = run_command(self.server.script, ["--remove", target, "--yes"], timeout=300)
+        self.record_history("remove", result, payload)
         self.json_response(200 if result["ok"] else 500, result)
+
+    def handle_history(self):
+        if not self.authorized():
+            return self.json_response(403, {"error": "forbidden"})
+        self.json_response(200, {"ok": True, "history": read_history(self.server.history_file)[::-1]})
+
+    def handle_backups(self):
+        if not self.authorized():
+            return self.json_response(403, {"error": "forbidden"})
+        self.json_response(200, {"ok": True, "backups": list_backup_archives(self.server.backup_dir)})
+
+    def handle_backup(self):
+        if not self.authorized():
+            return self.json_response(403, {"error": "forbidden"})
+        try:
+            self.read_json_body()
+            result = create_backup_archive(self.server.backup_dir)
+        except WebUIError as exc:
+            result = {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}
+            self.record_history("backup", result)
+            return self.json_response(400, {"error": str(exc)})
+        except OSError as exc:
+            result = {"ok": False, "exit_code": 1, "output": str(exc), "duration_ms": 0}
+            self.record_history("backup", result)
+            return self.json_response(500, result)
+        self.record_history("backup", result)
+        self.json_response(200, result)
+
+    def handle_restore(self):
+        if not self.authorized():
+            return self.json_response(403, {"error": "forbidden"})
+        payload = {}
+        try:
+            payload = self.read_json_body()
+            if not payload.get("confirm_restore"):
+                raise WebUIError("需要确认恢复备份")
+            result = restore_backup_archive(self.server.backup_dir, payload.get("name", ""))
+        except WebUIError as exc:
+            result = {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}
+            self.record_history("restore", result, payload)
+            return self.json_response(400, {"error": str(exc)})
+        except (OSError, tarfile.TarError) as exc:
+            result = {"ok": False, "exit_code": 1, "output": str(exc), "duration_ms": 0}
+            self.record_history("restore", result, payload)
+            return self.json_response(500, result)
+        self.record_history("restore", result, payload)
+        self.json_response(200 if result["ok"] else 500, result)
+
+    def record_history(self, action, result, payload=None):
+        append_history(self.server.history_file, self.server.history_lock, history_entry(action, result, payload))
 
     def authorized(self, parsed=None):
         return bool(self.authorization_source(parsed))
@@ -1307,10 +1944,13 @@ class Handler(BaseHTTPRequestHandler):
 class WebUIServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, server_address, handler, script, access_key):
+    def __init__(self, server_address, handler, script, access_key, history_file, backup_dir):
         super().__init__(server_address, handler)
         self.script = script
         self.access_key = access_key
+        self.history_file = history_file
+        self.backup_dir = backup_dir
+        self.history_lock = threading.Lock()
 
 
 def parse_args():
@@ -1319,6 +1959,8 @@ def parse_args():
     parser.add_argument("--port", type=int, default=int(os.environ.get("EMBY_WEBUI_PORT", "8765")))
     parser.add_argument("--script", default=str(resolve_script_path()))
     parser.add_argument("--key", default=os.environ.get("EMBY_WEBUI_KEY"))
+    parser.add_argument("--history-file", default=os.environ.get("EMBY_WEBUI_HISTORY_FILE", str(DEFAULT_STATE_DIR / "history.jsonl")))
+    parser.add_argument("--backup-dir", default=os.environ.get("EMBY_WEBUI_BACKUP_DIR", str(DEFAULT_BACKUP_DIR)))
     return parser.parse_args()
 
 
@@ -1343,7 +1985,9 @@ def main():
         print("错误: 非本机监听地址必须启用访问码。", file=sys.stderr)
         return 1
 
-    server = WebUIServer((args.host, args.port), Handler, script, access_key)
+    history_file = Path(args.history_file).expanduser().resolve()
+    backup_dir = Path(args.backup_dir).expanduser().resolve()
+    server = WebUIServer((args.host, args.port), Handler, script, access_key, history_file, backup_dir)
     url = f"http://{args.host}:{args.port}/"
     show_key_url = os.environ.get("EMBY_WEBUI_SHOW_KEY_URL", "1").lower() not in {"0", "false", "no", "off"}
     if access_key and show_key_url:

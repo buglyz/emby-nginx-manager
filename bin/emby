@@ -5,6 +5,8 @@ SCRIPT="${EMBY_NGINX_MANAGER_SCRIPT:-/opt/emby-nginx-manager/deploy.sh}"
 SERVICE_NAME="${EMBY_NGINX_MANAGER_WEBUI_SERVICE:-emby-nginx-webui.service}"
 ENV_FILE="${EMBY_NGINX_MANAGER_WEBUI_ENV:-/etc/emby-nginx-webui.env}"
 UNIT_FILE="/etc/systemd/system/$SERVICE_NAME"
+WEBUI_HTPASSWD="${EMBY_NGINX_MANAGER_WEBUI_HTPASSWD:-/etc/nginx/.htpasswd-emby-webui}"
+WEBUI_KEY_SNIPPET="${EMBY_NGINX_MANAGER_WEBUI_KEY_SNIPPET:-/etc/nginx/snippets/emby-webui-internal-key.conf}"
 
 if [ ! -f "$SCRIPT" ]; then
     SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -144,6 +146,257 @@ service_logs() {
     exec $SUDO journalctl -u "$SERVICE_NAME" "$@"
 }
 
+validate_proxy_domain() {
+    domain="$1"
+    case "$domain" in
+        ""|*" "*|*"/"*|*":"*|*"*"*|*";"*|*"'"*|*"\""*|*"\\"*)
+            echo "错误: WebUI 反代域名格式无效。" >&2
+            exit 1
+            ;;
+    esac
+}
+
+validate_basic_user() {
+    user="$1"
+    case "$user" in
+        ""|*[!A-Za-z0-9_.-]*)
+            echo "错误: Basic Auth 用户名只能包含字母、数字、点、下划线或短横线。" >&2
+            exit 1
+            ;;
+    esac
+}
+
+read_webui_key() {
+    if ! $SUDO test -f "$ENV_FILE"; then
+        echo "错误: 找不到 $ENV_FILE，请先运行 emby web-install。" >&2
+        exit 1
+    fi
+    key=$($SUDO awk -F= '$1 == "EMBY_WEBUI_KEY" { print $2; exit }' "$ENV_FILE")
+    case "$key" in
+        ""|*[!A-Za-z0-9_.-]*)
+            echo "错误: $ENV_FILE 中的 EMBY_WEBUI_KEY 无效。" >&2
+            exit 1
+            ;;
+    esac
+    printf '%s\n' "$key"
+}
+
+detect_webui_cert() {
+    domain="$1"
+    if $SUDO test -f "/etc/nginx/ssl/$domain/fullchain.pem" && $SUDO test -f "/etc/nginx/ssl/$domain/privkey.pem"; then
+        printf '%s|%s\n' "/etc/nginx/ssl/$domain/fullchain.pem" "/etc/nginx/ssl/$domain/privkey.pem"
+        return 0
+    fi
+    if $SUDO test -f "/etc/nginx/certs/$domain/cert" && $SUDO test -f "/etc/nginx/certs/$domain/key"; then
+        printf '%s|%s\n' "/etc/nginx/certs/$domain/cert" "/etc/nginx/certs/$domain/key"
+        return 0
+    fi
+    return 1
+}
+
+read_basic_password() {
+    if [ -n "${EMBY_WEBUI_BASIC_PASSWORD:-}" ]; then
+        printf '%s\n' "$EMBY_WEBUI_BASIC_PASSWORD"
+        return 0
+    fi
+    if [ -n "${password_file:-}" ]; then
+        sed -n '1p' "$password_file"
+        return 0
+    fi
+    if [ -t 0 ]; then
+        printf '请输入 WebUI Basic Auth 密码: ' >&2
+        stty -echo
+        IFS= read -r password
+        stty echo
+        printf '\n' >&2
+        printf '%s\n' "$password"
+        return 0
+    fi
+    echo "错误: 首次创建 htpasswd 需要交互输入密码，或设置 EMBY_WEBUI_BASIC_PASSWORD / --password-file。" >&2
+    exit 1
+}
+
+install_htpasswd_if_needed() {
+    basic_user="$1"
+    if $SUDO test -f "$WEBUI_HTPASSWD"; then
+        return 0
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "错误: 创建 Basic Auth 需要 openssl。" >&2
+        exit 1
+    fi
+    password=$(read_basic_password)
+    if [ -z "$password" ]; then
+        echo "错误: Basic Auth 密码不能为空。" >&2
+        exit 1
+    fi
+    hash=$(printf '%s\n' "$password" | openssl passwd -apr1 -stdin)
+    tmp_htpasswd=$(mktemp)
+    printf '%s:%s\n' "$basic_user" "$hash" > "$tmp_htpasswd"
+    $SUDO install -m 644 "$tmp_htpasswd" "$WEBUI_HTPASSWD"
+    rm -f "$tmp_htpasswd"
+    if getent group nginx >/dev/null 2>&1; then
+        $SUDO chgrp nginx "$WEBUI_HTPASSWD" || true
+        $SUDO chmod 640 "$WEBUI_HTPASSWD" || true
+    fi
+}
+
+install_web_proxy() {
+    setup_sudo
+    need_python
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "错误: 找不到 nginx。" >&2
+        exit 1
+    fi
+
+    proxy_domain=""
+    basic_user="${EMBY_WEBUI_BASIC_USER:-admin}"
+    password_file=""
+    force="no"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --user)
+                if [ "$#" -lt 2 ]; then
+                    echo "错误: --user 需要参数。" >&2
+                    exit 1
+                fi
+                basic_user="${2:-}"
+                shift 2
+                ;;
+            --password-file)
+                if [ "$#" -lt 2 ]; then
+                    echo "错误: --password-file 需要参数。" >&2
+                    exit 1
+                fi
+                password_file="${2:-}"
+                shift 2
+                ;;
+            --force)
+                force="yes"
+                shift
+                ;;
+            -*)
+                echo "错误: 未知参数 $1" >&2
+                exit 1
+                ;;
+            *)
+                if [ -n "$proxy_domain" ]; then
+                    echo "错误: 只能指定一个 WebUI 反代域名。" >&2
+                    exit 1
+                fi
+                proxy_domain="$1"
+                shift
+                ;;
+        esac
+    done
+
+    validate_proxy_domain "$proxy_domain"
+    validate_basic_user "$basic_user"
+    webui_key=$(read_webui_key)
+    cert_pair=$(detect_webui_cert "$proxy_domain") || {
+        echo "错误: 未找到 $proxy_domain 的 Nginx 证书。" >&2
+        echo "支持路径: /etc/nginx/ssl/$proxy_domain/fullchain.pem 或 /etc/nginx/certs/$proxy_domain/cert" >&2
+        exit 1
+    }
+    cert_file=${cert_pair%%|*}
+    key_file=${cert_pair#*|}
+
+    conf_file="/etc/nginx/conf.d/$proxy_domain-443.conf"
+    if $SUDO test -f "$conf_file" && ! $SUDO grep -q 'nre_webui_managed=true' "$conf_file"; then
+        if [ "$force" != "yes" ]; then
+            echo "错误: $conf_file 已存在且不是本命令管理的配置。需要覆盖请加 --force。" >&2
+            exit 1
+        fi
+    fi
+
+    install_htpasswd_if_needed "$basic_user"
+
+    $SUDO install -d /etc/nginx/snippets /etc/nginx/conf.d
+    tmp_snippet=$(mktemp)
+    printf 'proxy_set_header X-Emby-Webui-Key "%s";\n' "$webui_key" > "$tmp_snippet"
+    $SUDO install -m 600 "$tmp_snippet" "$WEBUI_KEY_SNIPPET"
+    rm -f "$tmp_snippet"
+
+    backup_conf=""
+    if $SUDO test -f "$conf_file"; then
+        backup_conf=$(mktemp)
+        $SUDO cp "$conf_file" "$backup_conf"
+    fi
+
+    tmp_conf=$(mktemp)
+    cat > "$tmp_conf" <<EOF
+# managed_by=emby-nginx-manager-webui
+# nre_webui_managed=true
+# domain=$proxy_domain
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $proxy_domain;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /usr/share/nginx/html;
+        default_type text/plain;
+        try_files \$uri =404;
+    }
+
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name $proxy_domain;
+
+    ssl_certificate     $cert_file;
+    ssl_certificate_key $key_file;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        auth_basic "Emby Nginx Manager";
+        auth_basic_user_file $WEBUI_HTPASSWD;
+        include $WEBUI_KEY_SNIPPET;
+
+        proxy_pass http://127.0.0.1:8765;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_set_header Authorization "";
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+EOF
+    $SUDO install -m 640 "$tmp_conf" "$conf_file"
+    rm -f "$tmp_conf"
+
+    if ! $SUDO nginx -t; then
+        if [ -n "$backup_conf" ]; then
+            $SUDO cp "$backup_conf" "$conf_file"
+        else
+            $SUDO rm -f "$conf_file"
+        fi
+        rm -f "$backup_conf"
+        echo "错误: Nginx 配置测试失败，已回滚。" >&2
+        exit 1
+    fi
+    rm -f "$backup_conf"
+    $SUDO nginx -s reload
+    echo "WebUI 公网反代已安装: https://$proxy_domain/"
+}
+
 if [ "${1:-}" = "web" ] || [ "${1:-}" = "webui" ]; then
     shift
     need_python
@@ -180,6 +433,11 @@ case "${1:-}" in
     web-logs|webui-logs)
         shift
         service_logs "$@"
+        ;;
+    web-proxy-install|webui-proxy-install)
+        shift
+        install_web_proxy "$@"
+        exit 0
         ;;
 esac
 

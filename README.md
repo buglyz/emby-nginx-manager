@@ -85,7 +85,17 @@ emby web-logs
 
 `web-install` writes `/etc/systemd/system/emby-nginx-webui.service`, creates `/etc/emby-nginx-webui.env` when missing, enables the service, and restarts it. The service listens on `127.0.0.1:8765` by default and keeps the internal access key out of the URL.
 
+Publish the WebUI through Nginx:
+
+```bash
+emby web-proxy-install emby.example.com
+```
+
+`web-proxy-install` generates a managed Nginx reverse proxy for the local WebUI, keeps or creates `/etc/nginx/.htpasswd-emby-webui`, injects the private WebUI key through `/etc/nginx/snippets/emby-webui-internal-key.conf`, tests Nginx, and reloads it. It requires an existing certificate at `/etc/nginx/ssl/<domain>/fullchain.pem` or `/etc/nginx/certs/<domain>/cert`. If the target Nginx config already exists and is not managed by this command, add `--force` after checking the existing file.
+
 The first successful WebUI page load stores the access code in an HttpOnly browser cookie and removes it from the address bar. If you bind WebUI to a non-local address such as `0.0.0.0`, authentication must stay enabled. When publishing the WebUI behind Nginx, keep Nginx authentication enabled and inject a private `X-Emby-Webui-Key` header to the local WebUI service.
+
+The WebUI records recent preview, deploy, remove, doctor, backup, and restore operations. Backups are stored under `/var/backups/emby-nginx-manager` and cover managed Emby Nginx configs plus WebUI service/proxy files. Backups do not include the internal WebUI access key.
 
 Quick WebUI self-check:
 
@@ -115,6 +125,7 @@ emby --doctor
 emby web
 emby web-install
 emby web-status
+emby web-proxy-install emby.example.com
 emby --dry-run -y https://emby.example.com -r http://127.0.0.1:8096
 ```
 
