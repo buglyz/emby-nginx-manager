@@ -16,6 +16,13 @@ Install or update:
 )
 ```
 
+For production use, prefer a pinned archive URL and optional checksum instead of tracking `main`. When `install.sh` is run outside a full checkout and downloads an archive, it honors:
+
+```bash
+ARCHIVE_URL=https://github.com/buglyz/emby-nginx-manager/archive/<commit-or-tag>.tar.gz \
+ARCHIVE_SHA256=<sha256>
+```
+
 Run the menu:
 
 ```bash
@@ -33,6 +40,14 @@ Add a reverse proxy config:
 ```bash
 emby -y https://emby.example.com -r http://127.0.0.1:8096
 ```
+
+302/307 redirect proxying is disabled by default. If you explicitly need Emby upstream redirects to be proxied through the public domain, enable it:
+
+```bash
+emby -y https://emby.example.com -r http://127.0.0.1:8096 --proxy-redirect
+```
+
+When enabled, `/backstream/...` is restricted to the configured backend scheme, host, and port. Keep it disabled unless you know the backend requires it.
 
 The scheme can be omitted for common cases:
 
@@ -97,6 +112,8 @@ The first successful WebUI page load stores the access code in an HttpOnly brows
 
 The WebUI records recent preview, deploy, remove, doctor, backup, and restore operations. Long-running operations are serialized so multiple browser sessions cannot write Nginx at the same time. Backups are stored under `/var/backups/emby-nginx-manager` and cover managed Emby Nginx configs plus WebUI service/proxy files. Backups do not include the internal WebUI access key. Restore actions preview the file list before applying changes, and old backups are pruned after the newest 20 by default. Set `EMBY_WEBUI_BACKUP_KEEP` to change the retention count.
 
+Backups also include certificate files referenced from managed configs when they are under `/etc/nginx/certs/<domain>/cert`, `/etc/nginx/certs/<domain>/key`, `/etc/nginx/ssl/<domain>/fullchain.pem`, or `/etc/nginx/ssl/<domain>/privkey.pem`. Backup archives are mode `600`; protect them because they may contain TLS private keys.
+
 Quick WebUI self-check:
 
 ```bash
@@ -127,6 +144,7 @@ emby web-install
 emby web-status
 emby web-proxy-install emby.example.com
 emby --dry-run -y https://emby.example.com -r http://127.0.0.1:8096
+emby --dry-run -y https://emby.example.com -r http://127.0.0.1:8096 --proxy-redirect
 ```
 
 ## Managed Config Marker

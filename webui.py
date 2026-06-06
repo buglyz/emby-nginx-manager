@@ -26,6 +26,9 @@ DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DNS_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 URL_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
 BACKUP_NAME_RE = re.compile(r"^emby-nginx-manager-[0-9]{14}\.tar\.gz$")
+CERT_BACKUP_ARC_RE = re.compile(
+    r"^etc/nginx/(?:certs/[^/]+/(?:cert|key)|ssl/[^/]+/(?:fullchain\.pem|privkey\.pem))$"
+)
 MAX_BODY_BYTES = 64 * 1024
 HISTORY_LIMIT = 200
 HISTORY_OUTPUT_TAIL = 4000
@@ -521,7 +524,7 @@ HTML = r"""<!doctype html>
           </div>
           <div class="checks">
             <label class="check"><input id="parse_cert_domain" name="parse_cert_domain" type="checkbox"> 自动提取根域名</label>
-            <label class="check"><input id="no_proxy_redirect" name="no_proxy_redirect" type="checkbox"> 禁用重定向代理</label>
+            <label class="check"><input id="enable_proxy_redirect" name="enable_proxy_redirect" type="checkbox"> 启用重定向代理</label>
             <label class="check"><input id="confirm_deploy" name="confirm_deploy" type="checkbox"> 确认写入配置</label>
           </div>
           <div class="actions">
@@ -1031,7 +1034,7 @@ HTML = r"""<!doctype html>
         cert_domain: data.cert_domain || '',
         dns_provider: data.dns_provider || '',
         parse_cert_domain: form.parse_cert_domain.checked,
-        no_proxy_redirect: form.no_proxy_redirect.checked,
+        enable_proxy_redirect: form.enable_proxy_redirect.checked,
         dry_run: mode !== 'deploy',
         confirm_deploy: form.confirm_deploy.checked
       };
@@ -1327,6 +1330,41 @@ def file_has_any_marker(path, markers):
     return any(marker in text for marker in markers)
 
 
+def cert_backup_arcname_allowed(arcname):
+    if arcname.startswith("/") or ".." in Path(arcname).parts:
+        return False
+    return bool(CERT_BACKUP_ARC_RE.fullmatch(arcname))
+
+
+def cert_backup_path_allowed(path):
+    if not path.is_absolute():
+        return False
+    return cert_backup_arcname_allowed(backup_arcname(path))
+
+
+def config_certificate_paths(path):
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    certs = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"ssl_certificate(?:_key)?\s+([^;\s]+)", line)
+        if not match:
+            continue
+        value = match.group(1)
+        if value.startswith("$"):
+            continue
+        cert_path = Path(value)
+        if cert_backup_path_allowed(cert_path) and cert_path.is_file() and not cert_path.is_symlink():
+            certs.append(cert_path)
+    return certs
+
+
 def collect_backup_files():
     files = []
     conf_dir = Path("/etc/nginx/conf.d")
@@ -1334,6 +1372,7 @@ def collect_backup_files():
         for path in sorted(conf_dir.glob("*.conf")):
             if file_has_any_marker(path, MANAGED_CONFIG_MARKERS):
                 files.append(path)
+                files.extend(config_certificate_paths(path))
 
     for path in (
         Path("/etc/nginx/.htpasswd-emby-webui"),
@@ -1463,6 +1502,8 @@ def restore_allowed_path(arcname):
         "etc/emby-nginx-webui.env",
     }
     if arcname in allowed_exact:
+        return True
+    if cert_backup_arcname_allowed(arcname):
         return True
     if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
         return True
@@ -1721,7 +1762,9 @@ def deploy_args(payload):
     if payload.get("parse_cert_domain"):
         args.append("--parse-cert-domain")
 
-    if payload.get("no_proxy_redirect"):
+    if payload.get("enable_proxy_redirect"):
+        args.append("--proxy-redirect")
+    elif payload.get("no_proxy_redirect"):
         args.append("--no-proxy-redirect")
 
     if payload.get("dry_run", True):

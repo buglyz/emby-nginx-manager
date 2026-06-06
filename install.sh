@@ -42,7 +42,16 @@ if [ -f "$SCRIPT_DIR/deploy.sh" ] && \
     SRC_DIR="$SCRIPT_DIR"
 else
     TMP_DIR=$(mktemp -d)
-    curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$TMP_DIR"
+    archive="$TMP_DIR/source.tar.gz"
+    curl -fsSL "$ARCHIVE_URL" -o "$archive"
+    if [ -n "${ARCHIVE_SHA256:-}" ]; then
+        if ! command -v sha256sum >/dev/null 2>&1; then
+            echo "安装失败: 设置了 ARCHIVE_SHA256，但缺少 sha256sum。" >&2
+            exit 1
+        fi
+        printf '%s  %s\n' "$ARCHIVE_SHA256" "$archive" | sha256sum -c - >/dev/null
+    fi
+    tar -xzf "$archive" -C "$TMP_DIR"
     SRC_DIR=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)
 fi
 

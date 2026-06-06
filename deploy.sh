@@ -205,8 +205,9 @@ installation and only writes an extra file under /etc/nginx/conf.d/.
   -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。
   -R, --resolver <DNS>           (可选) 手动指定 DNS 解析服务器。
   -c, --template-domain-config <URL>
-                                 (可选) 指定自定义 Nginx 配置文件模板。
-  --no-proxy-redirect            (可选) 禁用 302/307 重定向代理，后端重定向将直接返回给客户端。
+                                 (可选) 指定本地 Nginx 配置模板；远程模板需 NRE_ALLOW_REMOTE_TEMPLATE=1。
+  --proxy-redirect               (可选) 启用 302/307 重定向代理，默认关闭。
+  --no-proxy-redirect            (兼容旧参数) 保持 302/307 重定向代理关闭。
   --gh-proxy <URL>               (可选) 指定 GitHub 加速代理。
   --dry-run                      只预览将写入的配置，不写文件、不申请证书、不重载。
 
@@ -303,6 +304,92 @@ normalize_url_path() {
     printf '%s\n' "$raw_path"
 }
 
+validate_hostname_for_nginx() {
+    local host="$1"
+    local label="$2"
+    local clean label_part octet
+    local -a octets labels
+
+    if [[ -z "$host" ]]; then
+        log_error "$label 缺少主机名。"
+        exit 1
+    fi
+
+    case "$host" in
+        *[[:space:]]*|*";"*|*"{"*|*"}"*|*"\""*|*"'"*|*"\\"*)
+            log_error "$label 主机名包含 Nginx 配置不支持的字符: $host"
+            exit 1
+            ;;
+    esac
+
+    clean="${host#[}"
+    clean="${clean%]}"
+    if [[ "$clean" == *"%"* ]]; then
+        log_error "$label 不支持带 zone id 的 IPv6 地址。"
+        exit 1
+    fi
+
+    if [[ "$clean" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        IFS='.' read -r -a octets <<< "$clean"
+        for octet in "${octets[@]}"; do
+            if ((octet > 255)); then
+                log_error "$label IPv4 地址格式无效: $host"
+                exit 1
+            fi
+        done
+        return 0
+    fi
+
+    if [[ "$clean" == *:* ]]; then
+        if [[ ! "$clean" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+            log_error "$label IPv6 地址格式无效: $host"
+            exit 1
+        fi
+        return 0
+    fi
+
+    if ((${#clean} > 253)); then
+        log_error "$label 主机名过长。"
+        exit 1
+    fi
+
+    clean="${clean%.}"
+    IFS='.' read -r -a labels <<< "$clean"
+    for label_part in "${labels[@]}"; do
+        if [[ ! "$label_part" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+            log_error "$label 主机名格式无效: $host"
+            exit 1
+        fi
+    done
+}
+
+validate_port_for_nginx() {
+    local port="$1"
+    local label="$2"
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+        log_error "$label 端口必须在 1-65535 之间。"
+        exit 1
+    fi
+}
+
+validate_resolver_for_nginx() {
+    local resolver_value="$1"
+    [[ -z "$resolver_value" ]] && return 0
+    if [[ ! "$resolver_value" =~ ^[A-Za-z0-9_.:=\[\]\ -]+$ ]]; then
+        log_error "DNS 解析服务器包含 Nginx 配置不支持的字符: $resolver_value"
+        exit 1
+    fi
+}
+
+validate_dns_provider_for_acme() {
+    local provider="$1"
+    [[ -z "$provider" ]] && return 0
+    if [[ ! "$provider" =~ ^[A-Za-z0-9_]{1,32}$ ]]; then
+        log_error "DNS provider 只能包含 1-32 位字母、数字或下划线。"
+        exit 1
+    fi
+}
+
 escape_nginx_regex_literal() {
     printf '%s' "$1" | sed 's/[][\\.^$*+?{}()|]/\\&/g'
 }
@@ -331,6 +418,18 @@ download_with_verify() {
         log_error "无法下载: $url"
         return 1
     fi
+}
+
+verify_sha256() {
+    local file_path="$1"
+    local expected="$2"
+
+    [[ -z "$expected" ]] && return 0
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        log_error "设置了 SHA256 校验，但缺少 sha256sum。"
+        return 1
+    fi
+    printf '%s  %s\n' "$expected" "$file_path" | sha256sum -c - >/dev/null
 }
 
 # --- acme.sh: 判断证书是否可用 ---
@@ -401,11 +500,15 @@ process_url_input() {
     local is_http=$([[ "$temp_proto" == "http" ]] && echo "yes" || echo "no")
 
     if [[ "$domain_type" == "you" ]]; then
+        validate_hostname_for_nginx "$temp_domain" "访问地址"
+        validate_port_for_nginx "${temp_port:-$default_port}" "访问地址"
         you_domain="$temp_domain"
         you_domain_path="$temp_path"
         no_tls="$is_http"
         you_frontend_port="${temp_port:-$default_port}"
     elif [[ "$domain_type" == "r" ]]; then
+        validate_hostname_for_nginx "$temp_domain" "后端地址"
+        validate_port_for_nginx "${temp_port:-$default_port}" "后端地址"
         r_domain="$temp_domain"
         r_domain_path="$temp_path"
         r_http_frontend="$is_http"
@@ -476,6 +579,10 @@ normalize_input_url() {
 
 get_nginx_conf_dir() {
     echo "${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+}
+
+get_nginx_main_conf() {
+    echo "${NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
 }
 
 shorten_text() {
@@ -848,6 +955,11 @@ ensure_nginx_support_config() {
         echo "# nre_emby_managed=true"
         echo "# support=log_format"
         echo
+        echo "map \$http_upgrade \$nre_emby_connection_upgrade {"
+        echo "    default upgrade;"
+        echo "    '' close;"
+        echo "}"
+        echo
         echo "log_format nre_emby_safe '\$remote_addr - \$remote_user [\$time_local] \"\$request_method \$uri \$server_protocol\" '"
         echo "                         '\$status \$body_bytes_sent \"-\" '"
         echo "                         '\"\$http_user_agent\"';"
@@ -1059,7 +1171,7 @@ reset_deploy_fields() {
     domain_to_remove=""
     force_yes="${force_yes:-no}"
     template_domain_config_source=""
-    no_proxy_redirect="no"
+    no_proxy_redirect="yes"
     target_conf_path=""
     skip_certificate_issue="no"
     ssl_certificate_path=""
@@ -1081,9 +1193,9 @@ prompt_optional_deploy_settings() {
     read -rp "是否配置高级选项（证书域名/DNS/重定向）? [y/N]: " input
     if [[ ! "$input" =~ ^[Yy]$ ]]; then
         if [[ "$skip_certificate_issue" == "yes" ]]; then
-            log_info "使用默认选项：保留现有证书，启用 302/307 重定向代理。"
+            log_info "使用默认选项：保留现有证书，禁用 302/307 重定向代理。"
         else
-            log_info "使用默认选项：访问域名申请证书，standalone 验证，启用 302/307 重定向代理。"
+            log_info "使用默认选项：访问域名申请证书，standalone 验证，禁用 302/307 重定向代理。"
         fi
         return 0
     fi
@@ -1103,8 +1215,8 @@ prompt_optional_deploy_settings() {
         dns_provider="$input"
     fi
 
-    read -rp "是否禁用 302/307 重定向代理? [y/N]: " input
-    [[ "$input" =~ ^[Yy]$ ]] && no_proxy_redirect="yes"
+    read -rp "是否启用 302/307 重定向代理? [y/N]: " input
+    [[ "$input" =~ ^[Yy]$ ]] && no_proxy_redirect="no"
 }
 
 run_deploy_flow() {
@@ -1119,6 +1231,11 @@ run_deploy_flow() {
         generate_nginx_config
         log_success "dry-run 完成，未写入文件、未申请证书、未重载 Nginx。"
         return 0
+    fi
+
+    if [[ "$(id -u)" -ne 0 && "$no_tls" != "yes" && "$skip_certificate_issue" != "yes" ]]; then
+        log_error "TLS 证书申请和安装需要 root 权限。请使用 root 运行，或先手动准备证书后再修改现有配置。"
+        exit 1
     fi
 
     acquire_lock
@@ -1254,7 +1371,7 @@ parse_arguments() {
     domain_to_remove=""
     force_yes="no"
     template_domain_config_source=""
-    no_proxy_redirect="no"
+    no_proxy_redirect="yes"
     manual_gh_proxy=""
     manage_menu="no"
     list_configs="no"
@@ -1269,7 +1386,7 @@ parse_arguments() {
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,gh-proxy:,remove:,yes,template-domain-config:,no-proxy-redirect,menu,list,doctor,dry-run,help -n "$(basename "$0")" -- "$@"); then
+    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,gh-proxy:,remove:,yes,template-domain-config:,proxy-redirect,no-proxy-redirect,menu,list,doctor,dry-run,help -n "$(basename "$0")" -- "$@"); then
         exit 1
     fi
     eval set -- "$TEMP"
@@ -1284,6 +1401,7 @@ parse_arguments() {
             -D|--dns) dns_provider="$2"; shift 2 ;;
             -R|--resolver) manual_resolver="$2"; shift 2 ;;
             -c|--template-domain-config) template_domain_config_source="$2"; shift 2 ;;
+            --proxy-redirect) no_proxy_redirect="no"; shift ;;
             --no-proxy-redirect) no_proxy_redirect="yes"; shift ;;
             --gh-proxy) manual_gh_proxy="$2"; shift 2 ;;
             --remove) domain_to_remove="$2"; shift 2 ;;
@@ -1300,6 +1418,9 @@ parse_arguments() {
 
     process_url_input "$you_domain_full" "you"
     process_url_input "$r_domain_full" "r"
+    [[ -n "$cert_domain" ]] && validate_hostname_for_nginx "$cert_domain" "证书域名"
+    validate_resolver_for_nginx "$manual_resolver"
+    validate_dns_provider_for_acme "$dns_provider"
 }
 
 # --- 2. 交互模式 ---
@@ -1361,7 +1482,7 @@ display_summary() {
     echo -e "📜 证书域名: ${format_cert_domain}"
     echo -e "🔒 TLS 状态: $([[ "$no_tls" == "yes" ]] && echo "${RED}禁用 (HTTP Only)${NC}" || echo "${GREEN}启用 (HTTPS)${NC}")"
     echo -e "🧠 DNS 解析: ${resolver}"
-    echo -e "🔄 302/307 代理: $([[ "$no_proxy_redirect" == "yes" ]] && echo "${RED}禁用${NC}" || echo "${GREEN}启用${NC}")"
+    echo -e "🔄 302/307 代理: $([[ "$no_proxy_redirect" == "yes" ]] && echo "${RED}禁用${NC}" || echo "${YELLOW}启用（仅允许后端主机）${NC}")"
     echo -e "🌏 配置文件源: ${CONF_HOME}"
     echo "──────────────────────────────────────────────"
 }
@@ -1471,7 +1592,8 @@ install_dependencies() {
        local TMP_INSTALL_SCRIPT="./acme.sh"
        trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
 
-       if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh"; then
+       if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh" && \
+          verify_sha256 "$TMP_INSTALL_SCRIPT" "${ACME_INSTALL_SHA256:-}"; then
            if sh "$TMP_INSTALL_SCRIPT" --install-online; then
                log_success "acme.sh 安装完成。"
                "$ACME_SH" --upgrade --auto-upgrade
@@ -1490,6 +1612,10 @@ install_dependencies() {
 get_template_content() {
     if [[ -n "$template_domain_config_source" ]]; then
         if [[ "$template_domain_config_source" == http* ]]; then
+            if [[ ! "${NRE_ALLOW_REMOTE_TEMPLATE:-0}" =~ ^(1|yes|true|on)$ ]]; then
+                log_error "出于安全考虑，默认不加载远程 Nginx 模板。确认可信后设置 NRE_ALLOW_REMOTE_TEMPLATE=1。"
+                return 1
+            fi
             curl -fsL "$template_domain_config_source"
         elif [ -f "$template_domain_config_source" ]; then
             cat "$template_domain_config_source"
@@ -1515,14 +1641,19 @@ get_template_content() {
 generate_nginx_config() {
     log_info "准备生成 Nginx 配置文件..."
 
-    local main_conf="/etc/nginx/nginx.conf"
+    local main_conf
+    main_conf=$(get_nginx_main_conf)
     if [ ! -f "$main_conf" ]; then
         log_error "未找到 $main_conf。请先安装并初始化 nginx。"
         exit 1
     fi
 
-    if ! grep -Eq 'include[[:space:]]+/etc/nginx/conf\.d/\*\.conf;' "$main_conf"; then
-        log_error "当前 $main_conf 未包含 /etc/nginx/conf.d/*.conf，脚本不会接管主配置。"
+    local conf_dir
+    local include_pattern
+    conf_dir=$(get_nginx_conf_dir)
+    include_pattern=$(printf '%s/*.conf' "$conf_dir" | sed 's/[.[\*^$()+?{}|\\]/\\&/g')
+    if ! grep -Eq "include[[:space:]]+${include_pattern};" "$main_conf"; then
+        log_error "当前 $main_conf 未包含 $conf_dir/*.conf，脚本不会接管主配置。"
         log_error "请先手动把 conf.d include 接入现有 nginx，然后重新运行脚本。"
         exit 1
     fi
@@ -1573,69 +1704,56 @@ generate_nginx_config() {
         export backstream_config=''
         export handle_redirect_config=''
     else
-        # 启用 302/307 代理（默认）
-export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
+        # 启用 302/307 代理时只允许回源到当前后端主机，避免开放代理/SSRF。
+        local escaped_backend_host backstream_host_pattern
+        escaped_backend_host=$(escape_nginx_regex_literal "$r_domain")
+        backstream_host_pattern="$escaped_backend_host"
+        if [[ -n "$r_frontend_port" ]]; then
+            backstream_host_pattern="${backstream_host_pattern}(?::${r_frontend_port})?"
+        fi
+        export backstream_allowed_scheme="$r_proto"
+        export backstream_redirect_host_regex="$backstream_host_pattern"
+        export backstream_allowed_host_regex="^${backstream_host_pattern}$"
+        location_proxy_redirect="        proxy_redirect ~^(${backstream_allowed_scheme})://(${backstream_redirect_host_regex})(/.*)$ \$scheme://\$server_name:\$server_port/backstream/\$1/\$2\$3;"
+        export location_proxy_redirect
+        backstream_config=$(cat <<EOF
+    location ~ ^/backstream/(https?)/([^/]+)(/.*)$ {
+        set \$backstream_scheme                \$1;
+        set \$backstream_host                  \$2;
+        if (\$backstream_scheme != ${backstream_allowed_scheme}) { return 403; }
+        if (\$backstream_host !~ ${backstream_allowed_host_regex}) { return 403; }
 
-        proxy_intercept_errors on;
-        error_page 307 = @handle_redirect;'
-        export backstream_config='    location ~  ^/backstream/(https?)/([^/]+)  {
-        set $website                          $1://$2;
-        rewrite ^/backstream/(https?)/([^/]+)(/.+)$  $3 break;
-        early_hints $early_hints;
-        proxy_pass                            $website; #如果重定向的地址是http这里需要替换为http
+        set \$website                          \$backstream_scheme://\$backstream_host;
+        rewrite ^/backstream/(https?)/([^/]+)(/.*)$ \$3 break;
+        proxy_pass                            \$website; #如果重定向的地址是http这里需要替换为http
 
-        proxy_set_header Host                 $proxy_host;
-        proxy_set_header X-Real-IP            $remote_addr;
-        proxy_set_header X-Forwarded-For      $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto    $scheme;
-        proxy_set_header X-Forwarded-Host     $host;
-        proxy_set_header X-Forwarded-Port     $server_port;
+        proxy_set_header Host                 \$proxy_host;
+        proxy_set_header X-Real-IP            \$remote_addr;
+        proxy_set_header X-Forwarded-For      \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto    \$scheme;
+        proxy_set_header X-Forwarded-Host     \$host;
+        proxy_set_header X-Forwarded-Port     \$server_port;
 
         proxy_http_version                    1.1;
-        proxy_cache_bypass                    $http_upgrade;
+        proxy_cache_bypass                    \$http_upgrade;
         proxy_ssl_server_name                 on;
 
-        proxy_set_header Upgrade              $http_upgrade;
-        proxy_set_header Connection           $connection_upgrade;
+        proxy_set_header Upgrade              \$http_upgrade;
+        proxy_set_header Connection           \$nre_emby_connection_upgrade;
 
         proxy_connect_timeout                 60s;
         proxy_send_timeout                    1h;
         proxy_read_timeout                    1h;
 
-        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
-        set $rediret_scheme $1;
-        set $rediret_host $2;
-        sub_filter                            $proxy_host $host;
-        sub_filter '"'"'$rediret_scheme://$rediret_host'"'"' '"'"'$scheme://$server_name:$server_port/backstream/$rediret_scheme/$rediret_host'"'"';
+        proxy_redirect ~^(${backstream_allowed_scheme})://(${backstream_redirect_host_regex})(/.*)$ \$scheme://\$server_name:\$server_port/backstream/\$1/\$2\$3;
+        sub_filter                            \$proxy_host \$host;
         sub_filter_once                       off;
     }
 
-'
-        export handle_redirect_config='    location @handle_redirect {
-        set $saved_redirect_location '"'"'$upstream_http_location'"'"';
-        early_hints $early_hints;
-        proxy_pass $saved_redirect_location;
-        proxy_set_header Host                 $proxy_host;
-        proxy_set_header X-Real-IP            $remote_addr;
-        proxy_set_header X-Forwarded-For      $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto    $scheme;
-        proxy_set_header X-Forwarded-Host     $host;
-        proxy_set_header X-Forwarded-Port     $server_port;
-        proxy_http_version                    1.1;
-        proxy_cache_bypass                    $http_upgrade;
-
-        proxy_ssl_server_name                 on;
-
-        proxy_set_header Upgrade              $http_upgrade;
-        proxy_set_header Connection           $connection_upgrade;
-
-        proxy_connect_timeout                 60s;
-        proxy_send_timeout                    1h;
-        proxy_read_timeout                    1h;
-      
-    }
-
-'
+EOF
+)
+        export backstream_config
+        export handle_redirect_config=''
     fi
 
     local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $ssl_certificate_path $ssl_certificate_key_path $acme_http_webroot $you_domain_path $you_domain_path_rewrite $r_domain_full $location_proxy_redirect $backstream_config $handle_redirect_config'
