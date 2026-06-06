@@ -2238,6 +2238,7 @@ remove_domain_config() {
     local cert_dir=""
     local cert_full_path=""
     local cert_shared="no"
+    local cert_cleanup_note=""
 
     if $SUDO grep -q "ssl_certificate" "$nginx_conf_file"; then
         uses_tls="yes"
@@ -2250,11 +2251,18 @@ remove_domain_config() {
             local cert_parent_dir
             cert_parent_dir=$(cert_cleanup_dir_from_path "$cert_full_path" || true)
             if [[ -z "$cert_parent_dir" ]]; then
-                log_warn "证书路径不在允许自动清理的目录下，将跳过证书删除: $cert_full_path"
+                cert_cleanup_note="证书路径不在允许自动清理的目录下，将跳过证书删除: $cert_full_path"
+                log_warn "$cert_cleanup_note"
                 cert_shared="yes"
             else
                 remove_cert_domain=$(basename "$cert_parent_dir")
                 cert_dir="$cert_parent_dir"
+
+                if $SUDO [ -L "$cert_dir" ]; then
+                    cert_cleanup_note="证书目录是符号链接，将跳过自动删除: $cert_dir"
+                    log_warn "$cert_cleanup_note"
+                    cert_shared="yes"
+                fi
 
                 # 精确判断是否共享证书: 是否被其他 conf 引用
                 local current_conf_basename
@@ -2263,6 +2271,7 @@ remove_domain_config() {
                 conf_dir=$(get_nginx_conf_dir)
                 other_refs=$($SUDO grep -Rsl -F "$cert_full_path" "$conf_dir" --exclude="$current_conf_basename" 2>/dev/null || true)
                 if [[ -n "$other_refs" ]]; then
+                    cert_cleanup_note="检测到共享证书 ($remove_cert_domain)，已被其他站点配置引用，将不会删除证书文件。"
                     cert_shared="yes"
                 fi
             fi
@@ -2284,7 +2293,7 @@ remove_domain_config() {
                  echo "  - acme.sh 证书记录 (针对域名: $remove_cert_domain)"
             fi
         else
-            echo -e "${YELLOW}  - 注意: 检测到共享证书 ($remove_cert_domain)，已被其他站点配置引用，将不会删除证书文件。${NC}"
+            echo -e "${YELLOW}  - 注意: ${cert_cleanup_note:-将不会自动删除证书文件。}${NC}"
         fi
     fi
     echo "--------------------------------------------------------"
@@ -2357,9 +2366,11 @@ remove_domain_config() {
             fi
         else
             log_info "证书目录和 acme.sh 记录未被删除。"
-            echo "如果确认其他站点已不再引用此证书，请手动执行以下命令清理："
-            echo "  $HOME/.acme.sh/acme.sh --remove -d '$remove_cert_domain' --ecc"
-            echo "  $SUDO rm -rf '$cert_dir'"
+            if [[ -n "$cert_dir" && -n "$remove_cert_domain" ]]; then
+                echo "如果确认其他站点已不再引用此证书，请手动检查后清理："
+                echo "  $HOME/.acme.sh/acme.sh --remove -d '$remove_cert_domain' --ecc"
+                echo "  $SUDO rm -rf '$cert_dir'"
+            fi
         fi
     fi
 

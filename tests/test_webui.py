@@ -589,6 +589,14 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('cert_dir="$cert_parent_dir"', deploy)
         self.assertNotIn('cert_dir="/etc/nginx/certs/$remove_cert_domain"', deploy)
 
+    def test_remove_skips_symlink_certificate_dirs(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn('$SUDO [ -L "$cert_dir" ]', deploy)
+        self.assertIn("证书目录是符号链接，将跳过自动删除", deploy)
+        self.assertIn("cert_cleanup_note=", deploy)
+
     def test_deploy_doctor_uses_general_log_redaction(self):
         root = Path(__file__).resolve().parents[1]
         deploy = (root / "deploy.sh").read_text(encoding="utf-8")
