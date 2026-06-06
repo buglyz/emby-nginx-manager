@@ -227,6 +227,7 @@ read_basic_password() {
 
 install_htpasswd_if_needed() {
     basic_user="$1"
+    web_group=""
     if $SUDO test -f "$WEBUI_HTPASSWD"; then
         return 0
     fi
@@ -242,12 +243,18 @@ install_htpasswd_if_needed() {
     hash=$(printf '%s\n' "$password" | openssl passwd -apr1 -stdin)
     tmp_htpasswd=$(mktemp)
     printf '%s:%s\n' "$basic_user" "$hash" > "$tmp_htpasswd"
-    $SUDO install -m 640 "$tmp_htpasswd" "$WEBUI_HTPASSWD"
-    rm -f "$tmp_htpasswd"
-    if getent group nginx >/dev/null 2>&1; then
-        $SUDO chgrp nginx "$WEBUI_HTPASSWD" || true
-        $SUDO chmod 640 "$WEBUI_HTPASSWD" || true
+    for candidate in nginx www-data http; do
+        if getent group "$candidate" >/dev/null 2>&1; then
+            web_group="$candidate"
+            break
+        fi
+    done
+    if [ -n "$web_group" ]; then
+        $SUDO install -m 640 -g "$web_group" "$tmp_htpasswd" "$WEBUI_HTPASSWD"
+    else
+        $SUDO install -m 644 "$tmp_htpasswd" "$WEBUI_HTPASSWD"
     fi
+    rm -f "$tmp_htpasswd"
 }
 
 install_web_proxy() {

@@ -1358,6 +1358,25 @@ def restore_member_content_allowed(arcname, data):
     return True
 
 
+def config_certificate_arcnames_from_data(data):
+    text = data.decode("utf-8", errors="ignore")
+    certs = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"ssl_certificate(?:_key)?\s+([^;\s]+)", line)
+        if not match:
+            continue
+        value = match.group(1)
+        if value.startswith("$"):
+            continue
+        path = Path(value)
+        if path.is_absolute() and cert_backup_path_allowed(path):
+            certs.add(backup_arcname(path))
+    return certs
+
+
 def validate_restore_member(member, data=None):
     if member.isdir() or member.name == "manifest.json" or member.name in RESTORE_SKIP_ARCNAMES:
         return
@@ -1367,6 +1386,45 @@ def validate_restore_member(member, data=None):
         raise WebUIError(f"备份文件过大或大小无效: {member.name}")
     if data is not None and not restore_member_content_allowed(member.name, data):
         raise WebUIError(f"备份文件内容缺少托管标记或格式无效: {member.name}")
+
+
+def read_restore_member_data(tar, member):
+    handle = tar.extractfile(member)
+    if handle is None:
+        raise WebUIError(f"无法读取备份文件: {member.name}")
+    data = handle.read(RESTORE_MAX_MEMBER_BYTES + 1)
+    if len(data) != member.size:
+        raise WebUIError(f"备份文件大小不一致: {member.name}")
+    validate_restore_member(member, data)
+    return data
+
+
+def load_restore_archive_members(tar):
+    items = []
+    skipped = []
+    cert_refs = set()
+    total_size = 0
+
+    for member in tar.getmembers():
+        if member.isdir() or member.name == "manifest.json":
+            continue
+        if member.name in RESTORE_SKIP_ARCNAMES:
+            skipped.append(member.name)
+            continue
+        validate_restore_member(member)
+        total_size += member.size
+        if total_size > RESTORE_MAX_TOTAL_BYTES:
+            raise WebUIError("备份文件总大小过大")
+        data = read_restore_member_data(tar, member)
+        if member.name.startswith("etc/nginx/conf.d/") and member.name.endswith(".conf"):
+            cert_refs.update(config_certificate_arcnames_from_data(data))
+        items.append((member, data))
+
+    for member, _data in items:
+        if cert_backup_arcname_allowed(member.name) and member.name not in cert_refs:
+            raise WebUIError(f"备份证书文件未被托管配置引用: {member.name}")
+
+    return items, skipped
 
 
 def cert_backup_path_allowed(path):
@@ -1509,26 +1567,9 @@ def preview_backup_archive(backup_dir, name):
         raise WebUIError("备份不存在")
 
     files = []
-    skipped = []
-    total_size = 0
     with tarfile.open(archive, "r:gz") as tar:
-        for member in tar.getmembers():
-            if member.isdir() or member.name == "manifest.json":
-                continue
-            if member.name in RESTORE_SKIP_ARCNAMES:
-                skipped.append(member.name)
-                continue
-            validate_restore_member(member)
-            total_size += member.size
-            if total_size > RESTORE_MAX_TOTAL_BYTES:
-                raise WebUIError("备份文件总大小过大")
-            handle = tar.extractfile(member)
-            if handle is None:
-                raise WebUIError(f"无法读取备份文件: {member.name}")
-            data = handle.read(RESTORE_MAX_MEMBER_BYTES + 1)
-            if len(data) != member.size:
-                raise WebUIError(f"备份文件大小不一致: {member.name}")
-            validate_restore_member(member, data)
+        items, skipped = load_restore_archive_members(tar)
+        for member, _data in items:
             files.append({"path": "/" + member.name, "size": member.size})
     return {"ok": True, "name": name, "files": files, "skipped": skipped}
 
@@ -1587,29 +1628,10 @@ def restore_backup_archive(backup_dir, name):
     with tempfile.TemporaryDirectory(prefix="emby-nginx-restore-") as tmp_root:
         tmp_root_path = Path(tmp_root)
         with tarfile.open(archive, "r:gz") as tar:
-            members = []
-            total_size = 0
-            for member in tar.getmembers():
-                if member.isdir() or member.name == "manifest.json":
-                    continue
-                if member.name in RESTORE_SKIP_ARCNAMES:
-                    continue
-                validate_restore_member(member)
-                total_size += member.size
-                if total_size > RESTORE_MAX_TOTAL_BYTES:
-                    raise WebUIError("备份文件总大小过大")
-                members.append(member)
-
-            for member in members:
+            items, _skipped = load_restore_archive_members(tar)
+            for member, data in items:
                 src = tmp_root_path / member.name
                 src.parent.mkdir(parents=True, exist_ok=True)
-                handle = tar.extractfile(member)
-                if handle is None:
-                    raise WebUIError(f"无法读取备份文件: {member.name}")
-                data = handle.read(RESTORE_MAX_MEMBER_BYTES + 1)
-                if len(data) != member.size:
-                    raise WebUIError(f"备份文件大小不一致: {member.name}")
-                validate_restore_member(member, data)
                 with src.open("wb") as output:
                     output.write(data)
                 os.chmod(src, restore_mode_for_arcname(member.name))

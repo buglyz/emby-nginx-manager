@@ -1,3 +1,6 @@
+import io
+import tarfile
+import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -39,6 +42,20 @@ class DeployArgsTests(unittest.TestCase):
 
 
 class RestorePathTests(unittest.TestCase):
+    def make_archive(self, files):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        backup_dir = Path(tmp.name)
+        name = "emby-nginx-manager-20260102030405.tar.gz"
+        archive = backup_dir / name
+        with tarfile.open(archive, "w:gz") as tar:
+            for arcname, data in files.items():
+                payload = data.encode("utf-8") if isinstance(data, str) else data
+                info = tarfile.TarInfo(arcname)
+                info.size = len(payload)
+                tar.addfile(info, io.BytesIO(payload))
+        return backup_dir, name
+
     def member(self, name, size=1):
         return SimpleNamespace(
             name=name,
@@ -107,6 +124,36 @@ class RestorePathTests(unittest.TestCase):
 
         with self.assertRaises(webui.WebUIError):
             webui.validate_restore_member(member)
+
+    def test_certificate_restore_requires_managed_config_reference(self):
+        backup_dir, name = self.make_archive(
+            {
+                "etc/nginx/certs/other.example.com/key": b"secret",
+            }
+        )
+
+        with self.assertRaises(webui.WebUIError):
+            webui.preview_backup_archive(backup_dir, name)
+
+    def test_certificate_restore_allows_managed_config_reference(self):
+        backup_dir, name = self.make_archive(
+            {
+                "etc/nginx/conf.d/emby.example.com-443.conf": (
+                    "# nre_emby_managed=true\n"
+                    "server {\n"
+                    "  ssl_certificate /etc/nginx/certs/emby.example.com/cert;\n"
+                    "  ssl_certificate_key /etc/nginx/certs/emby.example.com/key;\n"
+                    "}\n"
+                ),
+                "etc/nginx/certs/emby.example.com/cert": b"cert",
+                "etc/nginx/certs/emby.example.com/key": b"key",
+            }
+        )
+
+        result = webui.preview_backup_archive(backup_dir, name)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["files"]), 3)
 
 
 class RequestSafetyTests(unittest.TestCase):
