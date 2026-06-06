@@ -539,6 +539,29 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn(':"tok"', redacted)
         self.assertGreaterEqual(redacted.count("<redacted>"), 6)
 
+    def test_history_entry_redacts_target_and_command(self):
+        entry = webui.history_entry(
+            "preview",
+            {
+                "ok": False,
+                "exit_code": 400,
+                "duration_ms": 0,
+                "command": "deploy --token abc --password=secret",
+                "output": "failed",
+            },
+            {
+                "frontend": "https://emby.example.com/path?token=abc",
+                "backend": "http://127.0.0.1:8096/?password=secret",
+            },
+        )
+
+        self.assertNotIn("abc", entry["target"])
+        self.assertNotIn("secret", entry["target"])
+        self.assertNotIn("abc", entry["command"])
+        self.assertNotIn("secret", entry["command"])
+        self.assertIn("<redacted>", entry["target"])
+        self.assertIn("<redacted>", entry["command"])
+
 
 class StaticSafetyTests(unittest.TestCase):
     def test_webui_does_not_reprint_result_after_refresh(self):

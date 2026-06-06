@@ -1250,6 +1250,12 @@ def redact_sensitive_text(value):
         text,
         flags=re.I,
     )
+    text = re.sub(
+        r"((?:^|\s)--(?:key|token|password|secret|access[-_]?key|webui[-_]?key)(?:=|\s+))\S+",
+        r"\1<redacted>",
+        text,
+        flags=re.I,
+    )
     text = re.sub(r"(X-Emby-Webui-Key:\s*)\S+", r"\1<redacted>", text, flags=re.I)
     text = re.sub(
         r"\b([A-Za-z0-9_.-]*(?:TOKEN|PASSWORD|SECRET|ACCESS_KEY|WEBUI_KEY)[A-Za-z0-9_.-]*=)\S+",
@@ -1273,7 +1279,7 @@ def safe_output_tail(output):
 
 
 def safe_history_text(value, max_len=512):
-    text = str(value or "").strip()
+    text = redact_sensitive_text(value).strip()
     text = "".join(ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in text)
     text = re.sub(r"\s+", " ", text)
     if len(text) > max_len:
@@ -1304,7 +1310,7 @@ def history_entry(action, result, payload=None):
         "exit_code": result.get("exit_code"),
         "duration_ms": result.get("duration_ms", 0),
         "target": action_target(action, payload),
-        "command": result.get("command", ""),
+        "command": safe_history_text(result.get("command", ""), max_len=512),
         "message": safe_output_tail(result.get("output", "")),
     }
 
