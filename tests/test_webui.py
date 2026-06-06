@@ -317,6 +317,14 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertNotIn('grep -Rsl -F "$cert_full_path" /etc/nginx/conf.d', deploy)
         self.assertIn('conf_dir=$(get_nginx_conf_dir)', deploy)
 
+    def test_deploy_doctor_uses_general_log_redaction(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("redact_sensitive_stream()", deploy)
+        self.assertIn("token|password|secret|access_key", deploy)
+        self.assertIn("printf '%s\\n' \"$recent_errors\" | redact_sensitive_stream", deploy)
+
 
 if __name__ == "__main__":
     unittest.main()

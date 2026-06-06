@@ -102,6 +102,12 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
+redact_sensitive_stream() {
+    sed -E \
+        -e 's/((^|[?&[:space:]])(api_key|key|token|password|secret|access_key)=)[^ &"]+/\1<redacted>/Ig' \
+        -e 's/(X-Emby-Webui-Key:[[:space:]]*)[^[:space:]]+/\1<redacted>/Ig'
+}
+
 LOCK_DIR="${NRE_LOCK_DIR:-/run/lock/emby-nginx-manager.lockdir}"
 LOCK_WAIT_SECONDS="${NRE_LOCK_WAIT_SECONDS:-30}"
 LOCK_HELD=""
@@ -1132,7 +1138,7 @@ run_doctor() {
         else
             doctor_warn "最近 Nginx 错误日志中仍有相关记录:"
         fi
-        printf '%s\n' "$recent_errors" | sed -E 's/(api_key=)[^ &"]+/\1<redacted>/g'
+        printf '%s\n' "$recent_errors" | redact_sensitive_stream
         warnings=$((warnings + 1))
     else
         doctor_ok "最近错误日志未发现 proxy_temp/reset/timeout/quic 相关记录"
