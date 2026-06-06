@@ -118,15 +118,16 @@ trap 'handle_error $LINENO' ERR
 # --- 备份函数 ---
 backup_file() {
     local file_path="$1"
+    local backup_dir="${BACKUP_DIR:-/etc/nginx/backup}"
     last_backup_path=""
     if [ -f "$file_path" ]; then
-        $SUDO mkdir -p "$BACKUP_DIR"
+        $SUDO mkdir -p "$backup_dir"
         local file_name
         file_name=$(basename "$file_path")
         local backup_name="${file_name}.$(date +%Y%m%d%H%M%S).bak"
-        $SUDO cp "$file_path" "$BACKUP_DIR/$backup_name"
-        last_backup_path="$BACKUP_DIR/$backup_name"
-        log_info "已备份文件 $file_path 至 $BACKUP_DIR/$backup_name"
+        $SUDO cp "$file_path" "$backup_dir/$backup_name"
+        last_backup_path="$backup_dir/$backup_name"
+        log_info "已备份文件 $file_path 至 $backup_dir/$backup_name"
     fi
 }
 
@@ -238,6 +239,38 @@ parse_url() {
     echo "$proto|$domain|$port|$path"
 }
 
+normalize_url_path() {
+    local raw_path="$1"
+
+    raw_path="${raw_path%%#*}"
+    raw_path="${raw_path%%\?*}"
+    [[ -z "$raw_path" ]] && raw_path="/"
+    [[ "$raw_path" != /* ]] && raw_path="/$raw_path"
+
+    while [[ "$raw_path" != "/" && "$raw_path" == */ ]]; do
+        raw_path="${raw_path%/}"
+    done
+
+    case "$raw_path" in
+        *[[:space:]]*|*";"*|*"{"*|*"}"*|*"\""*|*"'"*|*"\\"*)
+            return 1
+            ;;
+    esac
+
+    printf '%s\n' "$raw_path"
+}
+
+escape_nginx_regex_literal() {
+    printf '%s' "$1" | sed 's/[][\\.^$*+?{}()|]/\\&/g'
+}
+
+escape_nginx_rewrite_replacement() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\$/\\\$}"
+    printf '%s\n' "$value"
+}
+
 # --- 下载文件 (带验证和重试) ---
 download_with_verify() {
     local url="$1"
@@ -306,10 +339,16 @@ process_url_input() {
 
     if [[ -z "$full_url" ]]; then return; fi
 
-    local temp_domain temp_path temp_port temp_proto
+    local temp_domain temp_path temp_port temp_proto normalized_path
     IFS='|' read -r temp_proto temp_domain temp_port temp_path < <(parse_url "$full_url")
 
     temp_proto=${temp_proto:-https}
+    if ! normalized_path=$(normalize_url_path "$temp_path"); then
+        log_error "URL path 包含 Nginx 配置不支持的字符: $temp_path"
+        exit 1
+    fi
+    temp_path="$normalized_path"
+
     local default_port=$([[ "$temp_proto" == "http" ]] && echo 80 || echo 443)
     local is_http=$([[ "$temp_proto" == "http" ]] && echo "yes" || echo "no")
 
@@ -1138,8 +1177,18 @@ generate_nginx_config() {
 
     export you_domain_path_rewrite=""
     if [[ -n "$you_domain_path" && "$you_domain_path" != "/" ]]; then
-        local target_path="${r_domain_path:-/}"
-        export you_domain_path_rewrite="rewrite ^${you_domain_path}(.*)\$ ${target_path}\$1 break;"
+        local target_path source_path_regex target_path_replacement
+        target_path=$(normalize_url_path "${r_domain_path:-/}") || {
+            log_error "后端 URL path 包含 Nginx 配置不支持的字符: ${r_domain_path:-/}"
+            exit 1
+        }
+        source_path_regex=$(escape_nginx_regex_literal "$you_domain_path")
+        if [[ "$target_path" == "/" ]]; then
+            target_path_replacement=""
+        else
+            target_path_replacement=$(escape_nginx_rewrite_replacement "$target_path")
+        fi
+        export you_domain_path_rewrite="rewrite ^${source_path_regex}(?:/(.*))?\$ ${target_path_replacement}/\$1 break;"
     fi
 
     if [[ -z "$ssl_certificate_path" ]]; then
@@ -1289,7 +1338,7 @@ issue_certificate() {
     local cert_path_base="/etc/nginx/certs/$format_cert_domain"
     local reload_cmd="$SUDO nginx -s reload"
 
-    local issue_extra_args=""
+    local issue_extra_args=()
 
     # 针对 IP 证书 (含 IPv6) 的特殊处理
     local is_ip=false
@@ -1298,7 +1347,7 @@ issue_certificate() {
         is_ip=true
         log_info "检测到 IP 地址，将配置为 short-lived (短期) 证书模式..."
         [[ -n "$dns_provider" ]] && { log_warn "IP 证书不支持 DNS 验证，已自动切换为 Standalone 模式。"; dns_provider=""; }
-        issue_extra_args="--certificate-profile shortlived --days 6"
+        issue_extra_args=(--certificate-profile shortlived --days 6)
     fi
 
     # 检查证书是否已存在 (使用 format_cert_domain 查询)
@@ -1342,22 +1391,21 @@ issue_certificate() {
 # --- 证书申请：DNS 模式 ---
 issue_certificate_dns() {
     local dns_arg="dns_${dns_provider}"
-    # 使用 format_cert_domain
-    local domains_arg="-d $format_cert_domain"
+    local domain_args=(-d "$format_cert_domain")
 
     # 泛域名逻辑：如果不是 IP 且与 you_domain 不同，则补充 *.domain。
     if [[ "$format_cert_domain" != "$you_domain" ]] && ! is_ip_address "$you_domain"; then
-        domains_arg="$domains_arg -d *.$format_cert_domain"
+        domain_args+=(-d "*.$format_cert_domain")
     fi
 
     log_info "使用 DNS 模式 ($dns_provider) 申请证书..."
-    if "$ACME_SH" --issue --dns "$dns_arg" $domains_arg --keylength ec-256; then
+    if "$ACME_SH" --issue --dns "$dns_arg" "${domain_args[@]}" --keylength ec-256; then
         return 0
     fi
 
     log_warn "DNS 申请首次失败，清理残留状态后使用 --force 重试一次..."
     cleanup_stale_acme_record "$format_cert_domain"
-    if ! "$ACME_SH" --issue --force --dns "$dns_arg" $domains_arg --keylength ec-256; then
+    if ! "$ACME_SH" --issue --force --dns "$dns_arg" "${domain_args[@]}" --keylength ec-256; then
         log_error "证书申请失败（重试后仍失败）。"
         return 1
     fi
@@ -1377,24 +1425,24 @@ issue_certificate_standalone() {
     log_info "使用 Standalone 模式申请证书..."
 
     # 针对 IPv6，acme.sh 需要额外监听参数
-    local listen_arg=""
+    local listen_args=()
 
     if [[ "$is_ip_mode" == "true" ]]; then
         # 针对 IPv6 添加 --listen-v6
         if [[ "$you_domain" =~ : ]]; then
-            listen_arg="--listen-v6"
+            listen_args=(--listen-v6)
             log_info "检测到 IPv6 地址，添加 --listen-v6 参数..."
         fi
     fi
 
     # 使用 format_cert_domain (无括号) 进行申请
-    if "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
+    if "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 "${issue_extra_args[@]}" "${listen_args[@]}"; then
         return 0
     fi
 
     log_warn "Standalone 申请首次失败，清理残留状态后使用 --force 重试一次..."
     cleanup_stale_acme_record "$format_cert_domain"
-    if ! "$ACME_SH" --issue --force --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
+    if ! "$ACME_SH" --issue --force --standalone -d "$format_cert_domain" --keylength ec-256 "${issue_extra_args[@]}" "${listen_args[@]}"; then
         log_error "证书申请失败（重试后仍失败）。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
         return 1
     fi
@@ -1526,8 +1574,31 @@ remove_domain_config() {
     fi
 
     log_info "开始移除..."
+    local remove_backup_path=""
+    backup_file "$nginx_conf_file"
+    remove_backup_path="$last_backup_path"
+
     $SUDO rm -f "$nginx_conf_file"
-    log_info "Nginx 配置文件已删除。"
+    log_info "Nginx 配置文件已临时移除。"
+
+    log_info "正在检查 Nginx 配置并执行重载..."
+    if ! test_and_reload_nginx; then
+        log_error "Nginx 配置测试失败，正在恢复移除前的配置。"
+        if [[ -n "$remove_backup_path" && -f "$remove_backup_path" ]]; then
+            $SUDO cp "$remove_backup_path" "$nginx_conf_file"
+            log_warn "已恢复配置文件: $nginx_conf_file"
+            if test_and_reload_nginx; then
+                log_warn "已恢复移除前的 Nginx 配置，本次删除未生效。"
+            else
+                log_error "恢复配置后 Nginx 仍无法通过测试，请手动检查: $nginx_conf_file"
+            fi
+        else
+            log_error "未找到可恢复的配置备份。"
+        fi
+        return 1
+    fi
+
+    log_info "Nginx 已加载移除后的配置。"
 
     if [[ "$uses_tls" == "yes" ]]; then
         if [[ "$cert_shared" == "no" ]]; then
@@ -1554,12 +1625,7 @@ remove_domain_config() {
         fi
     fi
 
-    log_info "正在检查 Nginx 配置并执行重载..."
-    if test_and_reload_nginx; then
-        log_success "域名 '$domain' 的相关配置已成功移除！"
-    else
-        log_error "Nginx 配置测试失败，请检查配置文件。"
-    fi
+    log_success "域名 '$domain' 的相关配置已成功移除！"
 }
 
 # ===================================================================================
