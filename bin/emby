@@ -269,9 +269,15 @@ read_basic_password() {
     fi
     if [ -t 0 ]; then
         printf '请输入 WebUI Basic Auth 密码: ' >&2
+        saved_tty=$(stty -g)
         stty -echo
-        IFS= read -r password
-        stty echo
+        if ! IFS= read -r password; then
+            stty "$saved_tty"
+            printf '\n' >&2
+            echo "错误: 读取 Basic Auth 密码失败。" >&2
+            exit 1
+        fi
+        stty "$saved_tty"
         printf '\n' >&2
         printf '%s\n' "$password"
         return 0

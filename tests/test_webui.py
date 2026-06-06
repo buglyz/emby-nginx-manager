@@ -505,6 +505,14 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('conf_file="$NGINX_CONF_DIR/$proxy_domain-443.conf"', wrapper)
         self.assertNotIn('conf_file="/etc/nginx/conf.d/$proxy_domain-443.conf"', wrapper)
 
+    def test_webui_proxy_password_prompt_restores_tty_state(self):
+        root = Path(__file__).resolve().parents[1]
+        wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")
+
+        self.assertIn("saved_tty=$(stty -g)", wrapper)
+        self.assertIn('stty "$saved_tty"', wrapper)
+        self.assertNotIn("stty echo", wrapper)
+
 
 if __name__ == "__main__":
     unittest.main()
