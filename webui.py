@@ -2303,17 +2303,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.access_key:
             return "disabled"
         header_key = self.headers.get("X-Emby-Webui-Key", "")
-        if header_key == self.server.access_key:
+        if self.access_key_matches(header_key):
             return "header"
         cookie_key = self.request_cookies().get(COOKIE_NAME, "")
-        if cookie_key == self.server.access_key:
+        if self.access_key_matches(cookie_key):
             return "cookie"
         if parsed is None:
             parsed = urlparse(self.path)
         query_key = parse_qs(parsed.query).get("key", [""])[0]
-        if query_key == self.server.access_key:
+        if self.access_key_matches(query_key):
             return "query"
         return ""
+
+    def access_key_matches(self, value):
+        return bool(
+            self.server.access_key
+            and isinstance(value, str)
+            and secrets.compare_digest(value, self.server.access_key)
+        )
 
     def request_cookies(self):
         cookies = {}
@@ -2365,7 +2372,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Requested-With", "") == "EmbyNginxManager":
             return True
         header_key = self.headers.get("X-Emby-Webui-Key", "")
-        return bool(self.server.access_key and header_key == self.server.access_key)
+        return self.access_key_matches(header_key)
 
     def read_json_body(self):
         try:

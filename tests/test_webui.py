@@ -493,9 +493,16 @@ class RequestSafetyTests(unittest.TestCase):
             self.rfile = io.BytesIO(body)
             self.server = type("Server", (), {"access_key": access_key})()
 
+        def access_key_matches(self, value):
+            return webui.Handler.access_key_matches(self, value)
+
     def same_origin(self, headers, access_key="secret"):
         handler = self.DummyHandler(headers, access_key=access_key)
         return webui.Handler.same_origin_request(handler)
+
+    def authorization_source(self, headers, access_key="secret"):
+        handler = self.DummyHandler(headers, access_key=access_key)
+        return webui.Handler.authorization_source(handler)
 
     def test_missing_origin_requires_frontend_header(self):
         self.assertFalse(self.same_origin({"Host": "127.0.0.1:8765"}))
@@ -505,6 +512,7 @@ class RequestSafetyTests(unittest.TestCase):
 
     def test_internal_key_header_is_allowed(self):
         self.assertTrue(self.same_origin({"Host": "web.example.com", "X-Emby-Webui-Key": "secret"}))
+        self.assertEqual(self.authorization_source({"X-Emby-Webui-Key": "secret"}), "header")
 
     def test_cross_origin_is_rejected(self):
         self.assertFalse(
@@ -762,6 +770,12 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn("tempfile.NamedTemporaryFile", source)
         self.assertNotIn('history_file.with_suffix(".tmp")', source)
         self.assertNotIn('backup_dir / f".{name}.tmp"', source)
+
+    def test_webui_access_key_uses_constant_time_compare(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "webui.py").read_text(encoding="utf-8")
+
+        self.assertIn("secrets.compare_digest", source)
 
 
 if __name__ == "__main__":
