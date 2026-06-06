@@ -176,6 +176,9 @@ install_web_service() {
     WEBUI=$(resolve_webui)
     PYTHON_BIN=$(command -v python3)
     WORKDIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+    validate_config_path "$SCRIPT" "Emby Nginx 管理脚本"
+    validate_config_path "$WEBUI" "Emby Nginx WebUI"
+    validate_config_path "$WORKDIR" "WebUI 工作目录"
 
     ensure_webui_env
 

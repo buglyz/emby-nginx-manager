@@ -55,6 +55,15 @@ if PATH="$FAKE_BIN:$PATH" EMBY_NGINX_MANAGER_WEBUI_SERVICE='bad' sh "$ROOT/bin/e
 fi
 grep -q '必须以 .service 结尾' "$TMP_DIR/output"
 
+BAD_SCRIPT_DIR="$TMP_DIR/bad script"
+mkdir -p "$BAD_SCRIPT_DIR"
+touch "$BAD_SCRIPT_DIR/deploy.sh" "$BAD_SCRIPT_DIR/webui.py"
+if PATH="$FAKE_BIN:$PATH" EMBY_NGINX_MANAGER_SCRIPT="$BAD_SCRIPT_DIR/deploy.sh" EMBY_NGINX_MANAGER_WEBUI="$BAD_SCRIPT_DIR/webui.py" EMBY_NGINX_MANAGER_WEBUI_ENV="$TMP_DIR/env" sh "$ROOT/bin/emby" web-install >/dev/null 2>"$TMP_DIR/output"; then
+    echo "script path with spaces was accepted" >&2
+    exit 1
+fi
+grep -q 'Emby Nginx 管理脚本 路径包含不支持的字符' "$TMP_DIR/output"
+
 if PATH="$FAKE_BIN:$PATH" EMBY_NGINX_MANAGER_WEBUI_HTPASSWD='/tmp/bad path' sh "$ROOT/bin/emby" web-proxy-install web.example.com >/dev/null 2>"$TMP_DIR/output"; then
     echo "invalid htpasswd path was accepted" >&2
     exit 1
