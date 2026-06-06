@@ -61,3 +61,16 @@ with tarfile.open(sys.argv[1], "w:gz") as tar:
     tar.addfile(info)
 PY
 run_bad_archive '归档包含不支持的特殊文件类型'
+
+LOCAL_SRC="$TMP_DIR/local-src"
+mkdir -p "$LOCAL_SRC/bin" "$LOCAL_SRC/conf.d"
+cp "$ROOT/install.sh" "$LOCAL_SRC/install.sh"
+touch "$LOCAL_SRC/webui.py" "$LOCAL_SRC/README.md" "$LOCAL_SRC/bin/emby"
+touch "$LOCAL_SRC/conf.d/p.example.com.conf" "$LOCAL_SRC/conf.d/p.example.com.no_tls.conf"
+touch "$TMP_DIR/deploy-target"
+ln -s "$TMP_DIR/deploy-target" "$LOCAL_SRC/deploy.sh"
+if PATH="$FAKE_BIN:$PATH" INSTALL_DIR="$TMP_DIR/install" BIN_DIR="$TMP_DIR/bin-out" sh "$LOCAL_SRC/install.sh" >/dev/null 2>"$TMP_DIR/output"; then
+    echo "symlink local source was accepted" >&2
+    exit 1
+fi
+grep -q '安装源包含符号链接或非普通文件' "$TMP_DIR/output"

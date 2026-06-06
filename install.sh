@@ -54,6 +54,32 @@ validate_archive() {
     exit 1
 }
 
+source_tree_has_required_paths() {
+    root="$1"
+    [ -e "$root/deploy.sh" ] && \
+    [ -e "$root/webui.py" ] && \
+    [ -e "$root/install.sh" ] && \
+    [ -e "$root/README.md" ] && \
+    [ -e "$root/bin/emby" ] && \
+    [ -e "$root/conf.d/p.example.com.conf" ] && \
+    [ -e "$root/conf.d/p.example.com.no_tls.conf" ]
+}
+
+source_file_is_safe() {
+    [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+source_tree_is_safe() {
+    root="$1"
+    source_file_is_safe "$root/deploy.sh" && \
+    source_file_is_safe "$root/webui.py" && \
+    source_file_is_safe "$root/install.sh" && \
+    source_file_is_safe "$root/README.md" && \
+    source_file_is_safe "$root/bin/emby" && \
+    source_file_is_safe "$root/conf.d/p.example.com.conf" && \
+    source_file_is_safe "$root/conf.d/p.example.com.no_tls.conf"
+}
+
 cleanup() {
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR"
@@ -61,13 +87,11 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if [ -f "$SCRIPT_DIR/deploy.sh" ] && \
-   [ -f "$SCRIPT_DIR/webui.py" ] && \
-   [ -f "$SCRIPT_DIR/install.sh" ] && \
-   [ -f "$SCRIPT_DIR/README.md" ] && \
-   [ -f "$SCRIPT_DIR/bin/emby" ] && \
-   [ -f "$SCRIPT_DIR/conf.d/p.example.com.conf" ] && \
-   [ -f "$SCRIPT_DIR/conf.d/p.example.com.no_tls.conf" ]; then
+if source_tree_has_required_paths "$SCRIPT_DIR"; then
+    if ! source_tree_is_safe "$SCRIPT_DIR"; then
+        echo "安装失败: 安装源包含符号链接或非普通文件。" >&2
+        exit 1
+    fi
     SRC_DIR="$SCRIPT_DIR"
 else
     TMP_DIR=$(mktemp -d)
@@ -85,14 +109,7 @@ else
     SRC_DIR=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)
 fi
 
-if [ -z "$SRC_DIR" ] || \
-   [ ! -f "$SRC_DIR/deploy.sh" ] || \
-   [ ! -f "$SRC_DIR/webui.py" ] || \
-   [ ! -f "$SRC_DIR/install.sh" ] || \
-   [ ! -f "$SRC_DIR/README.md" ] || \
-   [ ! -f "$SRC_DIR/bin/emby" ] || \
-   [ ! -f "$SRC_DIR/conf.d/p.example.com.conf" ] || \
-   [ ! -f "$SRC_DIR/conf.d/p.example.com.no_tls.conf" ]; then
+if [ -z "$SRC_DIR" ] || ! source_tree_is_safe "$SRC_DIR"; then
     echo "安装失败: 未找到安装文件。" >&2
     exit 1
 fi
