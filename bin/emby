@@ -2,6 +2,9 @@
 set -eu
 
 SCRIPT="${EMBY_NGINX_MANAGER_SCRIPT:-/opt/emby-nginx-manager/deploy.sh}"
+SERVICE_NAME="${EMBY_NGINX_MANAGER_WEBUI_SERVICE:-emby-nginx-webui.service}"
+ENV_FILE="${EMBY_NGINX_MANAGER_WEBUI_ENV:-/etc/emby-nginx-webui.env}"
+UNIT_FILE="/etc/systemd/system/$SERVICE_NAME"
 
 if [ ! -f "$SCRIPT" ]; then
     SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -13,8 +16,7 @@ if [ ! -f "$SCRIPT" ]; then
     exit 1
 fi
 
-if [ "${1:-}" = "web" ] || [ "${1:-}" = "webui" ]; then
-    shift
+resolve_webui() {
     WEBUI="${EMBY_NGINX_MANAGER_WEBUI:-$(dirname "$SCRIPT")/webui.py}"
     if [ ! -f "$WEBUI" ]; then
         SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -24,12 +26,162 @@ if [ "${1:-}" = "web" ] || [ "${1:-}" = "webui" ]; then
         echo "错误: 找不到 Emby Nginx WebUI。" >&2
         exit 1
     fi
+    printf '%s\n' "$WEBUI"
+}
+
+need_python() {
     if ! command -v python3 >/dev/null 2>&1; then
         echo "错误: WebUI 需要 python3。" >&2
         exit 1
     fi
+}
+
+need_systemctl() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "错误: 当前系统没有 systemctl，无法管理后台服务。" >&2
+        exit 1
+    fi
+}
+
+setup_sudo() {
+    SUDO=""
+    if [ "$(id -u)" -ne 0 ]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "错误: 请使用 root 运行，或先安装 sudo。" >&2
+            exit 1
+        fi
+        SUDO="sudo"
+    fi
+}
+
+generate_access_key() {
+    python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+}
+
+ensure_webui_env() {
+    if $SUDO test -f "$ENV_FILE"; then
+        if ! $SUDO grep -q '^EMBY_WEBUI_KEY=' "$ENV_FILE"; then
+            key=$(generate_access_key)
+            printf '\nEMBY_WEBUI_KEY=%s\n' "$key" | $SUDO tee -a "$ENV_FILE" >/dev/null
+        fi
+        $SUDO chmod 600 "$ENV_FILE"
+        return
+    fi
+
+    tmp_env=$(mktemp)
+    chmod 600 "$tmp_env"
+    key=$(generate_access_key)
+    printf 'EMBY_WEBUI_KEY=%s\n' "$key" > "$tmp_env"
+    $SUDO install -m 600 "$tmp_env" "$ENV_FILE"
+    rm -f "$tmp_env"
+}
+
+install_web_service() {
+    setup_sudo
+    need_systemctl
+    need_python
+    WEBUI=$(resolve_webui)
+    PYTHON_BIN=$(command -v python3)
+    WORKDIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+
+    ensure_webui_env
+
+    tmp_unit=$(mktemp)
+    cat > "$tmp_unit" <<EOF
+[Unit]
+Description=Emby Nginx Manager WebUI
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=$WORKDIR
+EnvironmentFile=$ENV_FILE
+Environment=EMBY_WEBUI_SHOW_KEY_URL=0
+ExecStart=$PYTHON_BIN $WEBUI --script $SCRIPT
+Restart=on-failure
+RestartSec=2
+KillMode=mixed
+TimeoutStopSec=15
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    $SUDO install -m 644 "$tmp_unit" "$UNIT_FILE"
+    rm -f "$tmp_unit"
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable "$SERVICE_NAME" >/dev/null
+    $SUDO systemctl restart "$SERVICE_NAME"
+
+    echo "WebUI 服务已安装并启动: $SERVICE_NAME"
+    echo "查看状态: emby web-status"
+    echo "查看日志: emby web-logs"
+}
+
+service_action() {
+    action="$1"
+    setup_sudo
+    need_systemctl
+    $SUDO systemctl "$action" "$SERVICE_NAME"
+}
+
+service_status() {
+    setup_sudo
+    need_systemctl
+    $SUDO systemctl status "$SERVICE_NAME" --no-pager
+}
+
+service_logs() {
+    setup_sudo
+    need_systemctl
+    if [ "$#" -eq 0 ]; then
+        set -- -n 100 --no-pager
+    fi
+    exec $SUDO journalctl -u "$SERVICE_NAME" "$@"
+}
+
+if [ "${1:-}" = "web" ] || [ "${1:-}" = "webui" ]; then
+    shift
+    need_python
+    WEBUI=$(resolve_webui)
     exec python3 "$WEBUI" --script "$SCRIPT" "$@"
 fi
+
+case "${1:-}" in
+    web-install|webui-install)
+        shift
+        install_web_service "$@"
+        exit 0
+        ;;
+    web-start|webui-start)
+        shift
+        service_action start
+        exit 0
+        ;;
+    web-stop|webui-stop)
+        shift
+        service_action stop
+        exit 0
+        ;;
+    web-restart|webui-restart)
+        shift
+        service_action restart
+        exit 0
+        ;;
+    web-status|webui-status)
+        shift
+        service_status
+        exit 0
+        ;;
+    web-logs|webui-logs)
+        shift
+        service_logs "$@"
+        ;;
+esac
 
 if [ "$#" -eq 0 ]; then
     exec bash "$SCRIPT" --menu

@@ -66,13 +66,24 @@ Start the local WebUI:
 emby web
 ```
 
-The WebUI defaults to `127.0.0.1:8765` and prints a one-time access URL in the terminal. It can list managed configs, run `--doctor`, preview a new config, write a confirmed config, and remove a confirmed config.
+The foreground WebUI defaults to `127.0.0.1:8765` and prints a one-time access URL in the terminal. It can list managed configs, run `--doctor`, preview a new config, write a confirmed config, and remove a confirmed config.
 
 To use a different bind address or port:
 
 ```bash
 emby web --host 127.0.0.1 --port 8765
 ```
+
+Install and manage the WebUI as a systemd service:
+
+```bash
+emby web-install
+emby web-status
+emby web-restart
+emby web-logs
+```
+
+`web-install` writes `/etc/systemd/system/emby-nginx-webui.service`, creates `/etc/emby-nginx-webui.env` when missing, enables the service, and restarts it. The service listens on `127.0.0.1:8765` by default and keeps the internal access key out of the URL.
 
 The first successful WebUI page load stores the access code in an HttpOnly browser cookie and removes it from the address bar. If you bind WebUI to a non-local address such as `0.0.0.0`, authentication must stay enabled. When publishing the WebUI behind Nginx, keep Nginx authentication enabled and inject a private `X-Emby-Webui-Key` header to the local WebUI service.
 
@@ -102,6 +113,8 @@ Arguments are passed through:
 emby --list
 emby --doctor
 emby web
+emby web-install
+emby web-status
 emby --dry-run -y https://emby.example.com -r http://127.0.0.1:8096
 ```
 
