@@ -13,6 +13,24 @@ if [ ! -f "$SCRIPT" ]; then
     exit 1
 fi
 
+if [ "${1:-}" = "web" ] || [ "${1:-}" = "webui" ]; then
+    shift
+    WEBUI="${EMBY_NGINX_MANAGER_WEBUI:-$(dirname "$SCRIPT")/webui.py}"
+    if [ ! -f "$WEBUI" ]; then
+        SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+        WEBUI="$SCRIPT_DIR/webui.py"
+    fi
+    if [ ! -f "$WEBUI" ]; then
+        echo "错误: 找不到 Emby Nginx WebUI。" >&2
+        exit 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "错误: WebUI 需要 python3。" >&2
+        exit 1
+    fi
+    exec python3 "$WEBUI" --script "$SCRIPT" "$@"
+fi
+
 if [ "$#" -eq 0 ]; then
     exec bash "$SCRIPT" --menu
 fi

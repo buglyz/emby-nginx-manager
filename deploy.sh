@@ -851,7 +851,7 @@ doctor_log_cutoff_text() {
 }
 
 run_doctor() {
-    local warnings=0 failures=0 file domain url code cert_days support_conf recent_errors log_cutoff
+    local warnings=0 failures=0 file domain url code cert_days support_conf recent_errors log_cutoff managed_domain_regex escaped_domain
 
     echo -e "${BLUE}========= Emby Nginx Doctor =========${NC}"
 
@@ -887,6 +887,14 @@ run_doctor() {
         doctor_ok "找到 ${#CONFIG_FILES[@]} 个脚本管理的 Emby 配置"
         for file in "${CONFIG_FILES[@]}"; do
             domain=$(conf_server_name "$file")
+            if [[ -n "$domain" ]]; then
+                escaped_domain=$(escape_nginx_regex_literal "$domain")
+                if [[ -z "$managed_domain_regex" ]]; then
+                    managed_domain_regex="$escaped_domain"
+                else
+                    managed_domain_regex="$managed_domain_regex|$escaped_domain"
+                fi
+            fi
             echo
             echo "[$domain] $file"
 
@@ -947,9 +955,9 @@ run_doctor() {
 
     log_cutoff=$(doctor_log_cutoff_text)
     if [[ -n "$log_cutoff" ]]; then
-        recent_errors=$($SUDO tail -n 1000 /var/log/nginx/error.log 2>/dev/null | awk -v cutoff="$log_cutoff" '$1 " " $2 >= cutoff' | grep -Ei 'proxy_temp|Permission denied|upstream.*(reset|timed out|timeout)|broken pipe|quic|http3' | tail -n 10 || true)
+        recent_errors=$($SUDO tail -n 1000 /var/log/nginx/error.log 2>/dev/null | awk -v cutoff="$log_cutoff" '$1 " " $2 >= cutoff' | grep -Ei 'proxy_temp|Permission denied|upstream.*(reset|timed out|timeout)|broken pipe|quic|http3' | { if [[ -n "$managed_domain_regex" ]]; then grep -E "($managed_domain_regex)"; else cat; fi; } | tail -n 10 || true)
     else
-        recent_errors=$($SUDO tail -n 500 /var/log/nginx/error.log 2>/dev/null | grep -Ei 'proxy_temp|Permission denied|upstream.*(reset|timed out|timeout)|broken pipe|quic|http3' | tail -n 10 || true)
+        recent_errors=$($SUDO tail -n 500 /var/log/nginx/error.log 2>/dev/null | grep -Ei 'proxy_temp|Permission denied|upstream.*(reset|timed out|timeout)|broken pipe|quic|http3' | { if [[ -n "$managed_domain_regex" ]]; then grep -E "($managed_domain_regex)"; else cat; fi; } | tail -n 10 || true)
     fi
     echo
     if [[ -n "$recent_errors" ]]; then
