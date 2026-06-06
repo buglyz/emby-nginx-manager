@@ -739,6 +739,18 @@ reset_deploy_fields() {
 prompt_optional_deploy_settings() {
     local input
 
+    read -rp "是否配置高级选项（证书域名/DNS/重定向）? [y/N]: " input
+    if [[ ! "$input" =~ ^[Yy]$ ]]; then
+        if [[ "$skip_certificate_issue" == "yes" ]]; then
+            log_info "使用默认选项：保留现有证书，启用 302/307 重定向代理。"
+        else
+            log_info "使用默认选项：访问域名申请证书，standalone 验证，启用 302/307 重定向代理。"
+        fi
+        return 0
+    fi
+
+    echo -e "${BLUE}--- 高级选项 ---${NC}"
+
     if [[ "$skip_certificate_issue" == "yes" ]]; then
         log_info "将保留现有证书路径，不重新申请证书。"
     else
@@ -792,8 +804,9 @@ add_nginx_config_menu() {
     local input_you input_r
     reset_deploy_fields
     echo -e "\n${BLUE}--- 新增反向代理配置 ---${NC}"
-    read -rp "请输入要访问的地址 (例如 https://emby.example.com:443): " input_you
-    read -rp "请输入要反代的 Emby 地址 (例如 http://127.0.0.1:8096): " input_r
+    echo "通常只需要填写下面两个地址，后续高级选项可直接回车跳过。"
+    read -rp "访问地址 (例如 https://emby.example.com): " input_you
+    read -rp "Emby 后端地址 (例如 http://127.0.0.1:8096): " input_r
 
     process_url_input "$input_you" "you"
     process_url_input "$input_r" "r"
