@@ -580,6 +580,15 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertNotIn('grep -Rsl -F "$cert_full_path" /etc/nginx/conf.d', deploy)
         self.assertIn('conf_dir=$(get_nginx_conf_dir)', deploy)
 
+    def test_remove_uses_actual_allowed_certificate_directory(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("cert_cleanup_dir_from_path()", deploy)
+        self.assertIn('/etc/nginx/ssl/*/fullchain.pem', deploy)
+        self.assertIn('cert_dir="$cert_parent_dir"', deploy)
+        self.assertNotIn('cert_dir="/etc/nginx/certs/$remove_cert_domain"', deploy)
+
     def test_deploy_doctor_uses_general_log_redaction(self):
         root = Path(__file__).resolve().parents[1]
         deploy = (root / "deploy.sh").read_text(encoding="utf-8")

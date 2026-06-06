@@ -860,6 +860,25 @@ conf_ssl_key_path() {
     ' "$file" 2>/dev/null
 }
 
+cert_cleanup_dir_from_path() {
+    local cert_path="$1"
+    local cert_dir cert_parent
+    case "$cert_path" in
+        /etc/nginx/certs/*/cert|/etc/nginx/certs/*/key|/etc/nginx/ssl/*/fullchain.pem|/etc/nginx/ssl/*/privkey.pem)
+            cert_dir=$(dirname "$cert_path")
+            cert_parent=$(dirname "$cert_dir")
+            if [[ "$cert_parent" == "/etc/nginx/certs" || "$cert_parent" == "/etc/nginx/ssl" ]]; then
+                printf '%s\n' "$cert_dir"
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 conf_cert_days_remaining() {
     local file="$1"
     local cert end_date end_epoch now days
@@ -2229,18 +2248,23 @@ remove_domain_config() {
             cert_shared="yes"
         else
             local cert_parent_dir
-            cert_parent_dir=$(dirname "$cert_full_path")
-            remove_cert_domain=$(basename "$cert_parent_dir")
-            cert_dir="/etc/nginx/certs/$remove_cert_domain"
-
-            # 精确判断是否共享证书: 是否被其他 conf 引用
-            local current_conf_basename
-            current_conf_basename=$(basename "$nginx_conf_file")
-            local other_refs conf_dir
-            conf_dir=$(get_nginx_conf_dir)
-            other_refs=$($SUDO grep -Rsl -F "$cert_full_path" "$conf_dir" --exclude="$current_conf_basename" 2>/dev/null || true)
-            if [[ -n "$other_refs" ]]; then
+            cert_parent_dir=$(cert_cleanup_dir_from_path "$cert_full_path" || true)
+            if [[ -z "$cert_parent_dir" ]]; then
+                log_warn "证书路径不在允许自动清理的目录下，将跳过证书删除: $cert_full_path"
                 cert_shared="yes"
+            else
+                remove_cert_domain=$(basename "$cert_parent_dir")
+                cert_dir="$cert_parent_dir"
+
+                # 精确判断是否共享证书: 是否被其他 conf 引用
+                local current_conf_basename
+                current_conf_basename=$(basename "$nginx_conf_file")
+                local other_refs conf_dir
+                conf_dir=$(get_nginx_conf_dir)
+                other_refs=$($SUDO grep -Rsl -F "$cert_full_path" "$conf_dir" --exclude="$current_conf_basename" 2>/dev/null || true)
+                if [[ -n "$other_refs" ]]; then
+                    cert_shared="yes"
+                fi
             fi
         fi
     fi
