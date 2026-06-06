@@ -233,7 +233,30 @@ class RequestSafetyTests(unittest.TestCase):
         self.assertIn("HttpOnly", cookie)
 
 
+class RedactionTests(unittest.TestCase):
+    def test_sensitive_values_are_redacted(self):
+        text = (
+            "GET /?key=abc&token=def "
+            "X-Emby-Webui-Key: secret "
+            "EMBY_WEBUI_KEY=hidden "
+            '{"password":"pw","nested_token":"tok"}'
+        )
+
+        redacted = webui.redact_sensitive_text(text)
+
+        self.assertNotIn("abc", redacted)
+        self.assertNotIn("def", redacted)
+        self.assertNotIn("secret", redacted)
+        self.assertNotIn("hidden", redacted)
+        self.assertNotIn("pw", redacted)
+        self.assertNotIn(':"tok"', redacted)
+        self.assertGreaterEqual(redacted.count("<redacted>"), 6)
+
+
 class StaticSafetyTests(unittest.TestCase):
+    def test_webui_does_not_reprint_result_after_refresh(self):
+        self.assertNotIn("printOutput(result);\n        await refreshList(false);\n        await refreshHistory(false);\n        printOutput(result);", webui.HTML)
+
     def test_no_server_side_redirect_proxy_without_allowlist(self):
         root = Path(__file__).resolve().parents[1]
         deploy = (root / "deploy.sh").read_text(encoding="utf-8")

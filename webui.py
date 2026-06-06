@@ -1059,7 +1059,6 @@ HTML = r"""<!doctype html>
         printOutput(result);
         await refreshList(false);
         await refreshHistory(false);
-        printOutput(result);
         setReady(result.exit_code === 0 ? '完成' : '失败');
       } catch (error) {
         outputEl.textContent = error.message;
@@ -1087,7 +1086,6 @@ HTML = r"""<!doctype html>
         printOutput(result);
         await refreshList(false);
         await refreshHistory(false);
-        printOutput(result);
         setReady(result.exit_code === 0 ? '完成' : '失败');
       } catch (error) {
         outputEl.textContent = error.message;
@@ -1229,10 +1227,31 @@ def utc_timestamp():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def safe_output_tail(output):
-    text = strip_ansi(str(output or "")).strip()
-    text = re.sub(r"([?&]key=)[^ &\"\n]+", r"\1<redacted>", text)
+def redact_sensitive_text(value):
+    text = str(value or "")
+    text = re.sub(
+        r"([?&](?:key|token|password|secret|access_key)=)[^ &\"\n]+",
+        r"\1<redacted>",
+        text,
+        flags=re.I,
+    )
     text = re.sub(r"(X-Emby-Webui-Key:\s*)\S+", r"\1<redacted>", text, flags=re.I)
+    text = re.sub(
+        r"\b([A-Za-z0-9_.-]*(?:TOKEN|PASSWORD|SECRET|ACCESS_KEY|WEBUI_KEY)[A-Za-z0-9_.-]*=)\S+",
+        r"\1<redacted>",
+        text,
+    )
+    text = re.sub(
+        r'("?[A-Za-z0-9_.-]*(?:token|password|secret|access_key|webui_key)[A-Za-z0-9_.-]*"?\s*:\s*")[^"]*(")',
+        r"\1<redacted>\2",
+        text,
+        flags=re.I,
+    )
+    return text
+
+
+def safe_output_tail(output):
+    text = redact_sensitive_text(strip_ansi(str(output or ""))).strip()
     if len(text) > HISTORY_OUTPUT_TAIL:
         text = text[-HISTORY_OUTPUT_TAIL:]
     return text
@@ -1870,7 +1889,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "EmbyNginxWebUI/0.1"
 
     def log_message(self, fmt, *args):
-        message = re.sub(r"([?&]key=)[^ &\"]+", r"\1<redacted>", fmt % args)
+        message = redact_sensitive_text(fmt % args)
         sys.stderr.write("%s - %s\n" % (self.address_string(), message))
 
     def do_GET(self):
