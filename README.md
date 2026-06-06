@@ -136,6 +136,8 @@ emby web-proxy-install emby.example.com
 
 `web-proxy-install` generates a managed Nginx reverse proxy for the local WebUI under `NGINX_CONF_DIR`, keeps or creates `/etc/nginx/.htpasswd-emby-webui`, injects the private WebUI key through `/etc/nginx/snippets/emby-webui-internal-key.conf`, tests Nginx, and reloads it. It requires an existing certificate at `/etc/nginx/ssl/<domain>/fullchain.pem` or `/etc/nginx/certs/<domain>/cert`. If the target Nginx config already exists and is not managed by this command, add `--force` after checking the existing file. The Basic Auth file is installed as `0640` when a common Nginx worker group is available, otherwise it falls back to `0644`.
 
+Custom WebUI environment, Basic Auth, key snippet, and generated Nginx config paths must not be symbolic links.
+
 The first successful WebUI page load stores the access code in an HttpOnly browser cookie and removes it from the address bar. If you bind WebUI to a non-local address such as `0.0.0.0`, authentication must stay enabled. When publishing the WebUI behind Nginx, keep Nginx authentication enabled and inject a private `X-Emby-Webui-Key` header to the local WebUI service. Mutating WebUI API requests require either a same-origin request, the internal key header, or the WebUI frontend request header.
 
 WebUI environment variables:

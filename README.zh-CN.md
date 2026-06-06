@@ -138,6 +138,8 @@ emby web-proxy-install emby.example.com
 
 `web-proxy-install` 会在 `NGINX_CONF_DIR` 下生成托管的 WebUI 反代配置，复用或创建 `/etc/nginx/.htpasswd-emby-webui`，通过 `/etc/nginx/snippets/emby-webui-internal-key.conf` 注入内部 `X-Emby-Webui-Key`，测试 Nginx 后重载。它要求已有证书位于 `/etc/nginx/ssl/<domain>/fullchain.pem` 或 `/etc/nginx/certs/<domain>/cert`。如果目标配置已存在且不是本命令托管的配置，需要确认后加 `--force`。Basic Auth 文件会优先安装为可被常见 Nginx worker 组读取的 `0640`，找不到对应组时回退为 `0644`。
 
+自定义 WebUI 环境文件、Basic Auth 文件、内部密钥 snippet 和生成的 Nginx 配置目标都不能是符号链接。
+
 首次成功打开 WebUI 后，访问码会写入 HttpOnly cookie，并从地址栏移除。如果 WebUI 监听非本机地址，例如 `0.0.0.0`，必须启用访问码。公网发布时，请保留 Nginx Basic Auth，并通过私有 header 注入内部访问密钥。会修改状态的 WebUI API 请求必须是同源请求、带内部密钥 header，或带 WebUI 前端请求 header。
 
 WebUI 环境变量：

@@ -124,6 +124,15 @@ validate_config_path() {
     esac
 }
 
+reject_symlink_path() {
+    value="$1"
+    label="$2"
+    if $SUDO test -L "$value"; then
+        echo "错误: $label 不能是符号链接。" >&2
+        exit 1
+    fi
+}
+
 setup_sudo() {
     SUDO=""
     if [ "$(id -u)" -ne 0 ]; then
@@ -140,6 +149,7 @@ generate_access_key() {
 }
 
 ensure_webui_env() {
+    reject_symlink_path "$ENV_FILE" "WebUI 环境文件"
     if $SUDO test -f "$ENV_FILE"; then
         if ! $SUDO grep -q '^EMBY_WEBUI_KEY=' "$ENV_FILE"; then
             key=$(generate_access_key)
@@ -265,14 +275,21 @@ validate_basic_user() {
 }
 
 validate_password_file() {
-    if [ -n "${password_file:-}" ] && [ ! -f "$password_file" ]; then
-        echo "错误: Basic Auth 密码文件不存在或不是普通文件。" >&2
-        exit 1
+    if [ -n "${password_file:-}" ]; then
+        if [ -L "$password_file" ]; then
+            echo "错误: Basic Auth 密码文件不能是符号链接。" >&2
+            exit 1
+        fi
+        if [ ! -f "$password_file" ]; then
+            echo "错误: Basic Auth 密码文件不存在或不是普通文件。" >&2
+            exit 1
+        fi
     fi
 }
 
 read_webui_key() {
     validate_config_path "$ENV_FILE" "WebUI 环境文件"
+    reject_symlink_path "$ENV_FILE" "WebUI 环境文件"
     if ! $SUDO test -f "$ENV_FILE"; then
         echo "错误: 找不到 $ENV_FILE，请先运行 emby web-install。" >&2
         exit 1
@@ -416,6 +433,11 @@ install_web_proxy() {
     validate_proxy_domain "$proxy_domain"
     validate_basic_user "$basic_user"
     validate_password_file
+    conf_file="$NGINX_CONF_DIR/$proxy_domain-443.conf"
+    reject_symlink_path "$WEBUI_HTPASSWD" "Basic Auth 文件"
+    reject_symlink_path "$WEBUI_KEY_SNIPPET" "内部密钥 snippet"
+    reject_symlink_path "$conf_file" "WebUI Nginx 配置文件"
+
     webui_key=$(read_webui_key)
     cert_pair=$(detect_webui_cert "$proxy_domain") || {
         echo "错误: 未找到 $proxy_domain 的 Nginx 证书。" >&2
@@ -425,7 +447,6 @@ install_web_proxy() {
     cert_file=${cert_pair%%|*}
     key_file=${cert_pair#*|}
 
-    conf_file="$NGINX_CONF_DIR/$proxy_domain-443.conf"
     if $SUDO test -f "$conf_file" && ! $SUDO grep -q 'nre_webui_managed=true' "$conf_file"; then
         if [ "$force" != "yes" ]; then
             echo "错误: $conf_file 已存在且不是本命令管理的配置。需要覆盖请加 --force。" >&2
