@@ -45,6 +45,15 @@ run_fake_deploy() {
     PATH="$FAKE_BIN:$PATH" NGINX_MAIN_CONF="$MAIN_CONF" NGINX_CONF_DIR="$CONF_DIR" "$ROOT/deploy.sh" "$@"
 }
 
+if NGINX_MAIN_CONF="$MAIN_CONF" NGINX_CONF_DIR="/tmp/bad path" "$ROOT/deploy.sh" --dry-run -y https://bad-conf-dir.example.com -r http://127.0.0.1:8096 >/dev/null 2>&1; then
+    echo "unsafe nginx conf dir was accepted" >&2
+    exit 1
+fi
+if ACME_HTTP_WEBROOT="/tmp/web;root" run_dry -y https://bad-webroot.example.com -r http://127.0.0.1:8096 >/dev/null 2>&1; then
+    echo "unsafe acme webroot was accepted" >&2
+    exit 1
+fi
+
 default_output=$(run_dry -y https://emby.example.com -r http://127.0.0.1:8096)
 printf '%s\n' "$default_output" | grep -q 'proxy_redirect disabled'
 if printf '%s\n' "$default_output" | grep -q 'location ~ \^/backstream'; then

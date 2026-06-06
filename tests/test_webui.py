@@ -685,6 +685,15 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('[ -L "$file_path" ] || [ ! -f "$file_path" ]', deploy)
         self.assertIn('curl -fsL --max-filesize "$MAX_TEMPLATE_BYTES"', deploy)
 
+    def test_deploy_validates_configured_paths(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("validate_safe_absolute_path()", deploy)
+        self.assertIn('validate_safe_absolute_path "$value" "Nginx 配置目录"', deploy)
+        self.assertIn('validate_safe_absolute_path "$value" "Nginx 主配置"', deploy)
+        self.assertIn('validate_safe_absolute_path "$value" "ACME HTTP-01 webroot"', deploy)
+
     def test_webui_proxy_honors_configured_nginx_conf_dir(self):
         root = Path(__file__).resolve().parents[1]
         wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")

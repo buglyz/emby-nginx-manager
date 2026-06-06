@@ -705,11 +705,41 @@ normalize_input_url() {
 }
 
 get_nginx_conf_dir() {
-    echo "${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+    local value="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+    validate_safe_absolute_path "$value" "Nginx 配置目录"
+    echo "$value"
 }
 
 get_nginx_main_conf() {
-    echo "${NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
+    local value="${NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
+    validate_safe_absolute_path "$value" "Nginx 主配置"
+    echo "$value"
+}
+
+get_acme_http_webroot() {
+    local value="${ACME_HTTP_WEBROOT:-/usr/share/nginx/html}"
+    validate_safe_absolute_path "$value" "ACME HTTP-01 webroot"
+    echo "$value"
+}
+
+validate_safe_absolute_path() {
+    local value="$1"
+    local label="$2"
+
+    case "$value" in
+        /*)
+            ;;
+        *)
+            log_error "$label 必须使用绝对路径: $value"
+            exit 1
+            ;;
+    esac
+    case "$value" in
+        ""|"/"|*..*|*[![:print:]]*|*[[:space:]]*|*";"*|*"{"*|*"}"*|*"'"*|*"\""*|*"\\"*)
+            log_error "$label 路径不安全: $value"
+            exit 1
+            ;;
+    esac
 }
 
 shorten_text() {
@@ -1859,7 +1889,8 @@ EOF
     fi
 
     export you_domain you_frontend_port resolver format_cert_domain ssl_certificate_path ssl_certificate_key_path
-    export acme_http_webroot="${ACME_HTTP_WEBROOT:-/usr/share/nginx/html}"
+    export acme_http_webroot
+    acme_http_webroot=$(get_acme_http_webroot)
     export you_domain_path="${you_domain_path:-/}"
 
     local r_proto=$(get_protocol "$r_http_frontend")
@@ -2099,10 +2130,11 @@ reload_nginx_quietly() {
 }
 
 issue_certificate_webroot() {
-    local webroot="${ACME_HTTP_WEBROOT:-/usr/share/nginx/html}"
+    local webroot
     local conf_dir challenge_conf pending_conf safe_name issue_status=1
     local restored_backup="no"
 
+    webroot=$(get_acme_http_webroot)
     conf_dir=$(get_nginx_conf_dir)
     safe_name=$(printf '%s' "$format_cert_domain" | tr -c 'A-Za-z0-9_.-' '_')
     challenge_conf="$conf_dir/nre-acme-${safe_name}-80.conf"
