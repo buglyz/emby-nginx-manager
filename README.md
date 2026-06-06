@@ -4,7 +4,7 @@ Host-mode Emby reverse proxy management script for an existing Nginx installatio
 
 ## Quick Start
 
-Install or update on a root shell:
+Install or update:
 
 ```bash
 tmp=$(mktemp -d) && curl -fsSL https://github.com/buglyz/emby-nginx-manager/archive/refs/heads/main.tar.gz | tar -xz -C "$tmp" && bash "$tmp"/emby-nginx-manager-main/install.sh; rm -rf "$tmp"
@@ -27,6 +27,16 @@ Add a reverse proxy config:
 ```bash
 emby -y https://emby.example.com -r http://127.0.0.1:8096
 ```
+
+The scheme can be omitted for common cases:
+
+```bash
+emby -y emby.example.com -r 127.0.0.1:8096
+emby -y emby.example.com -r a.example.com
+emby -y emby.example.com:80 -r 127.0.0.1:8096
+```
+
+When the scheme is omitted, public names default to HTTPS, frontend port `80` defaults to HTTP, and local Emby ports such as `8096` default to HTTP.
 
 List configs created by this script:
 

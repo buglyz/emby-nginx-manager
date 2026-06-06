@@ -339,10 +339,15 @@ process_url_input() {
 
     if [[ -z "$full_url" ]]; then return; fi
 
-    local temp_domain temp_path temp_port temp_proto normalized_path
-    IFS='|' read -r temp_proto temp_domain temp_port temp_path < <(parse_url "$full_url")
+    local normalized_url temp_domain temp_path temp_port temp_proto normalized_path
+    normalized_url=$(normalize_input_url "$full_url" "$domain_type")
+    IFS='|' read -r temp_proto temp_domain temp_port temp_path < <(parse_url "$normalized_url")
 
     temp_proto=${temp_proto:-https}
+    if [[ "$temp_proto" != "http" && "$temp_proto" != "https" || -z "$temp_domain" ]]; then
+        log_error "无法解析地址: $full_url"
+        exit 1
+    fi
     if ! normalized_path=$(normalize_url_path "$temp_path"); then
         log_error "URL path 包含 Nginx 配置不支持的字符: $temp_path"
         exit 1
@@ -362,6 +367,67 @@ process_url_input() {
         r_domain_path="$temp_path"
         r_http_frontend="$is_http"
         r_frontend_port="${temp_port:-$default_port}"
+    fi
+}
+
+trim_text() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "$value"
+}
+
+backend_should_default_http() {
+    local value="$1"
+    local host_port port
+
+    host_port="${value%%/*}"
+    host_port="${host_port%%\?*}"
+
+    if [[ "$host_port" == localhost* || "$host_port" == 127.* || "$host_port" == "[::1]"* ]]; then
+        return 0
+    fi
+
+    if [[ "$host_port" =~ :([0-9]+)$ ]]; then
+        port="${BASH_REMATCH[1]}"
+        case "$port" in
+            80|8096|8097) return 0 ;;
+        esac
+    fi
+
+    return 1
+}
+
+input_url_port() {
+    local value="$1"
+    local host_port
+
+    host_port="${value%%/*}"
+    host_port="${host_port%%\?*}"
+
+    if [[ "$host_port" =~ :([0-9]+)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
+}
+
+normalize_input_url() {
+    local value="$1"
+    local domain_type="$2"
+    local port
+
+    value=$(trim_text "$value")
+    if [[ -z "$value" || "$value" =~ ^https?:// ]]; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+
+    port=$(input_url_port "$value")
+    if [[ "$domain_type" == "you" && "$port" == "80" ]]; then
+        printf 'http://%s\n' "$value"
+    elif [[ "$domain_type" == "r" ]] && backend_should_default_http "$value"; then
+        printf 'http://%s\n' "$value"
+    else
+        printf 'https://%s\n' "$value"
     fi
 }
 
@@ -811,8 +877,9 @@ add_nginx_config_menu() {
     reset_deploy_fields
     echo -e "\n${BLUE}--- 新增反向代理配置 ---${NC}"
     echo "通常只需要填写下面两个地址，后续高级选项可直接回车跳过。"
-    read -rp "访问地址 (例如 https://emby.example.com): " input_you
-    read -rp "Emby 后端地址 (例如 http://127.0.0.1:8096): " input_r
+    echo "可省略 http:// 或 https://；公网域名默认按 HTTPS，端口 80/本机 8096 默认按 HTTP。"
+    read -rp "访问地址 (例如 emby.example.com): " input_you
+    read -rp "Emby 后端地址 (例如 127.0.0.1:8096 或 a.example.com): " input_r
 
     process_url_input "$input_you" "you"
     process_url_input "$input_r" "r"
@@ -971,8 +1038,9 @@ prompt_interactive_mode() {
         fi
 
         echo -e "\n${BLUE}--- 交互模式: 配置反向代理 ---${NC}"
-        read -rp "请输入要访问的地址 (本机的公网IP或者域名,例如 https://11.22.33.44:8888 或 https://emby.mysite.com): " input_you
-        read -rp "请输入要反代的 Emby 地址 (原本的 Emby 访问链接, 例如 https://emby.server.com): " input_r
+        echo "可省略 http:// 或 https://；公网域名默认按 HTTPS，端口 80/本机 8096 默认按 HTTP。"
+        read -rp "请输入要访问的地址 (例如 emby.mysite.com 或 https://11.22.33.44:8888): " input_you
+        read -rp "请输入要反代的 Emby 地址 (例如 127.0.0.1:8096 或 emby.server.com): " input_r
 
         process_url_input "$input_you" "you"
         process_url_input "$input_r" "r"
