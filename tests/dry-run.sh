@@ -43,6 +43,11 @@ if run_dry -y https://emby.example.com -r 'http://127.0.0.1:8096/path?token=abc'
     echo "backend URL query was accepted" >&2
     exit 1
 fi
+run_dry -y https://emby.example.com -r 'http://[::1]:8096' >/dev/null
+if run_dry -y https://emby.example.com -r 'http://[::::]:8096' >/dev/null 2>&1; then
+    echo "invalid IPv6 backend was accepted" >&2
+    exit 1
+fi
 
 http_output=$(run_dry -y http://emby.example.com -r http://127.0.0.1:8096)
 printf '%s\n' "$http_output" | grep -Fq 'Block direct Emby web UI entry on HTTP-only frontends.'

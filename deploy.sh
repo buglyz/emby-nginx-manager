@@ -336,11 +336,71 @@ normalize_url_path() {
     printf '%s\n' "$raw_path"
 }
 
+validate_ipv4_literal() {
+    local addr="$1"
+    local octet
+    local -a octets
+
+    [[ "$addr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS='.' read -r -a octets <<< "$addr"
+    for octet in "${octets[@]}"; do
+        ((octet <= 255)) || return 1
+    done
+}
+
+ipv6_side_count() {
+    local side="$1"
+    local allow_ipv4="$2"
+    local part index count=0
+    local -a parts
+
+    if [[ -z "$side" ]]; then
+        echo 0
+        return 0
+    fi
+    [[ "$side" != :* && "$side" != *: && "$side" != *::* ]] || return 1
+
+    IFS=':' read -r -a parts <<< "$side"
+    for index in "${!parts[@]}"; do
+        part="${parts[$index]}"
+        if [[ "$part" == *.* ]]; then
+            [[ "$allow_ipv4" == "yes" && "$index" -eq $((${#parts[@]} - 1)) ]] || return 1
+            validate_ipv4_literal "$part" || return 1
+            count=$((count + 2))
+        else
+            [[ "$part" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+            count=$((count + 1))
+        fi
+    done
+    echo "$count"
+}
+
+validate_ipv6_literal() {
+    local addr="$1"
+    local left right left_count right_count total
+
+    [[ -n "$addr" && "$addr" == *:* && "$addr" != *"%"* ]] || return 1
+    [[ "$addr" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
+
+    if [[ "$addr" == *::* ]]; then
+        right="${addr#*::}"
+        [[ "$right" != *::* ]] || return 1
+        left="${addr%%::*}"
+        left_count=$(ipv6_side_count "$left" no) || return 1
+        right_count=$(ipv6_side_count "$right" yes) || return 1
+        total=$((left_count + right_count))
+        ((total < 8)) || return 1
+    else
+        total=$(ipv6_side_count "$addr" yes) || return 1
+        ((total == 8)) || return 1
+    fi
+}
+
 validate_hostname_for_nginx() {
     local host="$1"
     local label="$2"
-    local clean label_part octet
-    local -a octets labels
+    local clean label_part
+    local -a labels
 
     if [[ -z "$host" ]]; then
         log_error "$label 缺少主机名。"
@@ -362,18 +422,15 @@ validate_hostname_for_nginx() {
     fi
 
     if [[ "$clean" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-        IFS='.' read -r -a octets <<< "$clean"
-        for octet in "${octets[@]}"; do
-            if ((octet > 255)); then
-                log_error "$label IPv4 地址格式无效: $host"
-                exit 1
-            fi
-        done
+        if ! validate_ipv4_literal "$clean"; then
+            log_error "$label IPv4 地址格式无效: $host"
+            exit 1
+        fi
         return 0
     fi
 
     if [[ "$clean" == *:* ]]; then
-        if [[ ! "$clean" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+        if ! validate_ipv6_literal "$clean"; then
             log_error "$label IPv6 地址格式无效: $host"
             exit 1
         fi
