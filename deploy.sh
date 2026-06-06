@@ -484,7 +484,13 @@ conf_uses_tls() {
 
 conf_proxy_target() {
     local file="$1"
-    local website
+    local meta website
+    meta=$(conf_metadata_value "$file" "backend")
+    if [[ -n "$meta" ]]; then
+        echo "$meta"
+        return 0
+    fi
+
     website=$($SUDO awk '
         /^[[:space:]]*set[[:space:]]+\$website[[:space:]]+/ {
             sub(/^[[:space:]]*set[[:space:]]+\$website[[:space:]]+/, "")
