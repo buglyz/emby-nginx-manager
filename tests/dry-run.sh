@@ -35,6 +35,14 @@ if run_dry -y 'https://bad.example.com;root=/tmp' -r http://127.0.0.1:8096 >/dev
     echo "invalid frontend host was accepted" >&2
     exit 1
 fi
+if run_dry -y 'https://emby.example.com/path?token=abc' -r http://127.0.0.1:8096 >/dev/null 2>&1; then
+    echo "frontend URL query was accepted" >&2
+    exit 1
+fi
+if run_dry -y https://emby.example.com -r 'http://127.0.0.1:8096/path?token=abc' >/dev/null 2>&1; then
+    echo "backend URL query was accepted" >&2
+    exit 1
+fi
 
 http_output=$(run_dry -y http://emby.example.com -r http://127.0.0.1:8096)
 printf '%s\n' "$http_output" | grep -Fq 'Block direct Emby web UI entry on HTTP-only frontends.'

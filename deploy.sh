@@ -488,6 +488,10 @@ process_url_input() {
     local domain_type="$2" # "you" or "r"
 
     if [[ -z "$full_url" ]]; then return; fi
+    if [[ "$full_url" == *\?* || "$full_url" == *\#* ]]; then
+        log_error "地址不能包含查询参数或锚点: $full_url"
+        exit 1
+    fi
 
     local normalized_url temp_domain temp_path temp_port temp_proto normalized_path
     normalized_url=$(normalize_input_url "$full_url" "$domain_type")
