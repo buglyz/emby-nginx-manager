@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+SCRIPT="${EMBY_NGINX_MANAGER_SCRIPT:-/opt/emby-nginx-manager/deploy.sh}"
+
+if [ ! -f "$SCRIPT" ]; then
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+    SCRIPT="$SCRIPT_DIR/deploy.sh"
+fi
+
+if [ ! -f "$SCRIPT" ]; then
+    echo "错误: 找不到 Emby Nginx 管理脚本。" >&2
+    exit 1
+fi
+
+if [ "$#" -eq 0 ]; then
+    exec bash "$SCRIPT" --menu
+fi
+
+exec bash "$SCRIPT" "$@"
