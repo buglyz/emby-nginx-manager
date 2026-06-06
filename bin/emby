@@ -221,6 +221,13 @@ validate_basic_user() {
     esac
 }
 
+validate_password_file() {
+    if [ -n "${password_file:-}" ] && [ ! -f "$password_file" ]; then
+        echo "错误: Basic Auth 密码文件不存在或不是普通文件。" >&2
+        exit 1
+    fi
+}
+
 read_webui_key() {
     validate_config_path "$ENV_FILE" "WebUI 环境文件"
     if ! $SUDO test -f "$ENV_FILE"; then
@@ -358,6 +365,7 @@ install_web_proxy() {
 
     validate_proxy_domain "$proxy_domain"
     validate_basic_user "$basic_user"
+    validate_password_file
     webui_key=$(read_webui_key)
     cert_pair=$(detect_webui_cert "$proxy_domain") || {
         echo "错误: 未找到 $proxy_domain 的 Nginx 证书。" >&2
