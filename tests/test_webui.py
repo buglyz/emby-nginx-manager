@@ -671,6 +671,14 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn("make_tmp_file tmp_htpasswd", wrapper)
         self.assertNotIn("=$(make_tmp_file)", wrapper)
 
+    def test_webui_uses_unique_temp_files_for_state_writes(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "webui.py").read_text(encoding="utf-8")
+
+        self.assertIn("tempfile.NamedTemporaryFile", source)
+        self.assertNotIn('history_file.with_suffix(".tmp")', source)
+        self.assertNotIn('backup_dir / f".{name}.tmp"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

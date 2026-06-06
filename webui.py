@@ -1339,12 +1339,27 @@ def append_history(history_file, lock, entry):
         rows = read_history(history_file)
         rows.append(entry)
         rows = rows[-HISTORY_LIMIT:]
-        tmp = history_file.with_suffix(".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, history_file)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix=f".{history_file.name}.",
+                suffix=".tmp",
+                dir=history_file.parent,
+                delete=False,
+            ) as handle:
+                tmp = Path(handle.name)
+                for row in rows:
+                    handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, history_file)
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def parse_config_rows(output):
@@ -1592,7 +1607,7 @@ def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     name = f"emby-nginx-manager-{time.strftime('%Y%m%d%H%M%S')}.tar.gz"
     final_path = backup_dir / name
-    tmp_path = backup_dir / f".{name}.tmp"
+    tmp_path = None
     files = collect_backup_files()
     manifest = {
         "created_at": utc_timestamp(),
@@ -1600,17 +1615,26 @@ def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
     }
     manifest_data = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
 
-    with tarfile.open(tmp_path, "w:gz") as tar:
-        info = tarfile.TarInfo("manifest.json")
-        info.size = len(manifest_data)
-        info.mtime = int(time.time())
-        normalize_tar_info(info, mode=0o600)
-        tar.addfile(info, io.BytesIO(manifest_data))
-        for path in files:
-            add_backup_file(tar, path)
+    try:
+        with tempfile.NamedTemporaryFile(prefix=f".{name}.", suffix=".tmp", dir=backup_dir, delete=False) as handle:
+            tmp_path = Path(handle.name)
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(manifest_data)
+            info.mtime = int(time.time())
+            normalize_tar_info(info, mode=0o600)
+            tar.addfile(info, io.BytesIO(manifest_data))
+            for path in files:
+                add_backup_file(tar, path)
 
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, final_path)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, final_path)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
     prune_backup_archives(backup_dir, keep)
     return {
         "ok": True,
