@@ -126,6 +126,13 @@ class RestorePathTests(unittest.TestCase):
         with self.assertRaises(webui.WebUIError):
             webui.validate_restore_member(member)
 
+    def test_weak_webui_service_restore_content_is_rejected(self):
+        member = self.member("etc/systemd/system/emby-nginx-webui.service")
+        data = b"Description=Emby Nginx Manager WebUI\nExecStart=/usr/bin/python3 webui.py\n"
+
+        with self.assertRaises(webui.WebUIError):
+            webui.validate_restore_member(member, data)
+
     def test_certificate_restore_requires_managed_config_reference(self):
         backup_dir, name = self.make_archive(
             {

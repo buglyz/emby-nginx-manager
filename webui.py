@@ -47,6 +47,8 @@ WEBUI_SERVICE_MARKERS = (
     "Description=Emby Nginx Manager WebUI",
     "ExecStart=",
     "webui.py",
+    "NoNewPrivileges=true",
+    "PrivateTmp=true",
 )
 RESTORE_SKIP_ARCNAMES = {
     "etc/emby-nginx-webui.env",
