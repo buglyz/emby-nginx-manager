@@ -1244,6 +1244,11 @@ export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[
         proxy_pass                            $website; #如果重定向的地址是http这里需要替换为http
 
         proxy_set_header Host                 $proxy_host;
+        proxy_set_header X-Real-IP            $remote_addr;
+        proxy_set_header X-Forwarded-For      $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto    $scheme;
+        proxy_set_header X-Forwarded-Host     $host;
+        proxy_set_header X-Forwarded-Port     $server_port;
 
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
@@ -1253,8 +1258,8 @@ export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[
         proxy_set_header Connection           $connection_upgrade;
 
         proxy_connect_timeout                 60s;
-        proxy_send_timeout                    60s;
-        proxy_read_timeout                    60s;
+        proxy_send_timeout                    1h;
+        proxy_read_timeout                    1h;
 
         proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
         set $rediret_scheme $1;
@@ -1270,6 +1275,11 @@ export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[
         early_hints $early_hints;
         proxy_pass $saved_redirect_location;
         proxy_set_header Host                 $proxy_host;
+        proxy_set_header X-Real-IP            $remote_addr;
+        proxy_set_header X-Forwarded-For      $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto    $scheme;
+        proxy_set_header X-Forwarded-Host     $host;
+        proxy_set_header X-Forwarded-Port     $server_port;
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
 
@@ -1279,8 +1289,8 @@ export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[
         proxy_set_header Connection           $connection_upgrade;
 
         proxy_connect_timeout                 60s;
-        proxy_send_timeout                    60s;
-        proxy_read_timeout                    60s;
+        proxy_send_timeout                    1h;
+        proxy_read_timeout                    1h;
       
     }
 
