@@ -29,6 +29,7 @@ BACKUP_NAME_RE = re.compile(r"^emby-nginx-manager-[0-9]{14}\.tar\.gz$")
 MAX_BODY_BYTES = 64 * 1024
 HISTORY_LIMIT = 200
 HISTORY_OUTPUT_TAIL = 4000
+DEFAULT_BACKUP_KEEP = int(os.environ.get("EMBY_WEBUI_BACKUP_KEEP", "20"))
 COOKIE_NAME = "emby_webui_access"
 DEFAULT_STATE_DIR = Path(os.environ.get("EMBY_WEBUI_STATE_DIR", "/var/lib/emby-nginx-manager"))
 DEFAULT_BACKUP_DIR = Path(os.environ.get("EMBY_WEBUI_BACKUP_DIR", "/var/backups/emby-nginx-manager"))
@@ -910,9 +911,22 @@ HTML = r"""<!doctype html>
     }
 
     async function restoreBackup(name) {
-      if (!window.confirm(`确认恢复备份 ${name}？`)) return;
-      setBusy('恢复中');
       try {
+        setBusy('预览恢复');
+        const preview = await api('/api/restore-preview', {
+          method: 'POST',
+          body: JSON.stringify({ name })
+        });
+        const files = preview.files || [];
+        printOutput({
+          ok: true,
+          exit_code: 0,
+          command: `restore preview ${name}`,
+          output: files.map((file) => file.path).join('\n') || '无可恢复文件'
+        });
+        setReady('待确认');
+        if (!window.confirm(`确认恢复备份 ${name}？将恢复 ${files.length} 个文件。`)) return;
+        setBusy('恢复中');
         const result = await api('/api/restore', {
           method: 'POST',
           body: JSON.stringify({ name, confirm_restore: true })
@@ -1342,7 +1356,7 @@ def backup_arcname(path):
     return str(path).lstrip("/")
 
 
-def create_backup_archive(backup_dir):
+def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     name = f"emby-nginx-manager-{time.strftime('%Y%m%d%H%M%S')}.tar.gz"
     final_path = backup_dir / name
@@ -1365,6 +1379,7 @@ def create_backup_archive(backup_dir):
 
     os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, final_path)
+    prune_backup_archives(backup_dir, keep)
     return {
         "ok": True,
         "exit_code": 0,
@@ -1396,6 +1411,44 @@ def list_backup_archives(backup_dir):
             }
         )
     return rows
+
+
+def prune_backup_archives(backup_dir, keep):
+    try:
+        keep = int(keep)
+    except (TypeError, ValueError):
+        keep = DEFAULT_BACKUP_KEEP
+    if keep <= 0 or not backup_dir.is_dir():
+        return
+    backups = [backup_dir / row["name"] for row in list_backup_archives(backup_dir)]
+    for path in backups[keep:]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def preview_backup_archive(backup_dir, name):
+    name = clean_text_field(name, label="备份名称", required=True, max_len=128)
+    if not BACKUP_NAME_RE.fullmatch(name):
+        raise WebUIError("备份名称无效")
+    archive = backup_dir / name
+    if not archive.is_file():
+        raise WebUIError("备份不存在")
+
+    files = []
+    skipped = []
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isdir() or member.name == "manifest.json":
+                continue
+            if member.name in RESTORE_SKIP_ARCNAMES:
+                skipped.append(member.name)
+                continue
+            if not member.isfile() or not restore_allowed_path(member.name):
+                raise WebUIError(f"备份包含不允许恢复的路径: {member.name}")
+            files.append({"path": "/" + member.name, "size": member.size})
+    return {"ok": True, "name": name, "files": files, "skipped": skipped}
 
 
 def restore_allowed_path(arcname):
@@ -1700,6 +1753,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_history()
         if parsed.path == "/api/backups":
             return self.handle_backups()
+        if parsed.path == "/api/operation":
+            return self.handle_operation()
         return self.not_found()
 
     def do_POST(self):
@@ -1716,6 +1771,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_backup()
         if parsed.path == "/api/restore":
             return self.handle_restore()
+        if parsed.path == "/api/restore-preview":
+            return self.handle_restore_preview()
         return self.not_found()
 
     def handle_index(self, parsed):
@@ -1750,6 +1807,7 @@ class Handler(BaseHTTPRequestHandler):
                 "script_exists": self.server.script.is_file(),
                 "auth_enabled": bool(self.server.access_key),
                 "bind": "%s:%s" % self.server.server_address[:2],
+                "operation": self.current_operation(),
             },
         )
 
@@ -1761,9 +1819,14 @@ class Handler(BaseHTTPRequestHandler):
         except WebUIError as exc:
             self.record_history("doctor", {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0})
             return self.json_response(400, {"error": str(exc)})
-        result = run_command(self.server.script, ["--doctor"], timeout=120)
-        self.record_history("doctor", result)
-        self.json_response(200 if result["ok"] else 500, result)
+        if not self.acquire_operation("doctor"):
+            return self.operation_busy_response()
+        try:
+            result = run_command(self.server.script, ["--doctor"], timeout=120)
+            self.record_history("doctor", result)
+            self.json_response(200 if result["ok"] else 500, result)
+        finally:
+            self.release_operation()
 
     def handle_deploy(self):
         if not self.authorized():
@@ -1776,10 +1839,15 @@ class Handler(BaseHTTPRequestHandler):
             action = "preview" if payload.get("dry_run", True) else "deploy"
             self.record_history(action, {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}, payload)
             return self.json_response(400, {"error": str(exc)})
-        result = run_command(self.server.script, args, timeout=900)
         action = "preview" if payload.get("dry_run", True) else "deploy"
-        self.record_history(action, result, payload)
-        self.json_response(200 if result["ok"] else 500, result)
+        if not self.acquire_operation(action):
+            return self.operation_busy_response()
+        try:
+            result = run_command(self.server.script, args, timeout=900)
+            self.record_history(action, result, payload)
+            self.json_response(200 if result["ok"] else 500, result)
+        finally:
+            self.release_operation()
 
     def handle_remove(self):
         if not self.authorized():
@@ -1793,9 +1861,14 @@ class Handler(BaseHTTPRequestHandler):
         except WebUIError as exc:
             self.record_history("remove", {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}, payload)
             return self.json_response(400, {"error": str(exc)})
-        result = run_command(self.server.script, ["--remove", target, "--yes"], timeout=300)
-        self.record_history("remove", result, payload)
-        self.json_response(200 if result["ok"] else 500, result)
+        if not self.acquire_operation("remove"):
+            return self.operation_busy_response()
+        try:
+            result = run_command(self.server.script, ["--remove", target, "--yes"], timeout=300)
+            self.record_history("remove", result, payload)
+            self.json_response(200 if result["ok"] else 500, result)
+        finally:
+            self.release_operation()
 
     def handle_history(self):
         if not self.authorized():
@@ -1807,45 +1880,102 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response(403, {"error": "forbidden"})
         self.json_response(200, {"ok": True, "backups": list_backup_archives(self.server.backup_dir)})
 
+    def handle_operation(self):
+        if not self.authorized():
+            return self.json_response(403, {"error": "forbidden"})
+        self.json_response(200, {"ok": True, "operation": self.current_operation()})
+
     def handle_backup(self):
         if not self.authorized():
             return self.json_response(403, {"error": "forbidden"})
+        if not self.acquire_operation("backup"):
+            return self.operation_busy_response()
         try:
-            self.read_json_body()
-            result = create_backup_archive(self.server.backup_dir)
-        except WebUIError as exc:
-            result = {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}
+            try:
+                self.read_json_body()
+                result = create_backup_archive(self.server.backup_dir, self.server.backup_keep)
+                status = 200
+            except WebUIError as exc:
+                result = {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}
+                status = 400
+            except OSError as exc:
+                result = {"ok": False, "exit_code": 1, "output": str(exc), "duration_ms": 0}
+                status = 500
             self.record_history("backup", result)
+            self.json_response(status, result if status != 400 else {"error": result["output"]})
+        finally:
+            self.release_operation()
+
+    def handle_restore_preview(self):
+        if not self.authorized():
+            return self.json_response(403, {"error": "forbidden"})
+        try:
+            payload = self.read_json_body()
+            result = preview_backup_archive(self.server.backup_dir, payload.get("name", ""))
+        except (WebUIError, OSError, tarfile.TarError) as exc:
             return self.json_response(400, {"error": str(exc)})
-        except OSError as exc:
-            result = {"ok": False, "exit_code": 1, "output": str(exc), "duration_ms": 0}
-            self.record_history("backup", result)
-            return self.json_response(500, result)
-        self.record_history("backup", result)
         self.json_response(200, result)
 
     def handle_restore(self):
         if not self.authorized():
             return self.json_response(403, {"error": "forbidden"})
         payload = {}
+        acquired = False
         try:
             payload = self.read_json_body()
             if not payload.get("confirm_restore"):
                 raise WebUIError("需要确认恢复备份")
+            if not self.acquire_operation("restore"):
+                return self.operation_busy_response()
+            acquired = True
             result = restore_backup_archive(self.server.backup_dir, payload.get("name", ""))
+            status = 200 if result["ok"] else 500
         except WebUIError as exc:
             result = {"ok": False, "exit_code": 400, "output": str(exc), "duration_ms": 0}
             self.record_history("restore", result, payload)
-            return self.json_response(400, {"error": str(exc)})
+            status = 400
+            response = {"error": str(exc)}
         except (OSError, tarfile.TarError) as exc:
             result = {"ok": False, "exit_code": 1, "output": str(exc), "duration_ms": 0}
             self.record_history("restore", result, payload)
-            return self.json_response(500, result)
-        self.record_history("restore", result, payload)
-        self.json_response(200 if result["ok"] else 500, result)
+            status = 500
+            response = result
+        else:
+            self.record_history("restore", result, payload)
+            response = result
+        finally:
+            if acquired:
+                self.release_operation()
+        self.json_response(status, response)
 
     def record_history(self, action, result, payload=None):
         append_history(self.server.history_file, self.server.history_lock, history_entry(action, result, payload))
+
+    def acquire_operation(self, action):
+        if not self.server.operation_lock.acquire(blocking=False):
+            return False
+        self.server.operation_name = action
+        self.server.operation_started = utc_timestamp()
+        return True
+
+    def release_operation(self):
+        self.server.operation_name = ""
+        self.server.operation_started = ""
+        try:
+            self.server.operation_lock.release()
+        except RuntimeError:
+            pass
+
+    def current_operation(self):
+        return {
+            "busy": bool(self.server.operation_name),
+            "action": self.server.operation_name,
+            "started_at": self.server.operation_started,
+        }
+
+    def operation_busy_response(self):
+        op = self.current_operation()
+        return self.json_response(409, {"error": f"已有操作正在运行: {op.get('action') or 'unknown'}", "operation": op})
 
     def authorized(self, parsed=None):
         return bool(self.authorization_source(parsed))
@@ -1944,13 +2074,17 @@ class Handler(BaseHTTPRequestHandler):
 class WebUIServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, server_address, handler, script, access_key, history_file, backup_dir):
+    def __init__(self, server_address, handler, script, access_key, history_file, backup_dir, backup_keep):
         super().__init__(server_address, handler)
         self.script = script
         self.access_key = access_key
         self.history_file = history_file
         self.backup_dir = backup_dir
+        self.backup_keep = backup_keep
         self.history_lock = threading.Lock()
+        self.operation_lock = threading.Lock()
+        self.operation_name = ""
+        self.operation_started = ""
 
 
 def parse_args():
@@ -1961,6 +2095,7 @@ def parse_args():
     parser.add_argument("--key", default=os.environ.get("EMBY_WEBUI_KEY"))
     parser.add_argument("--history-file", default=os.environ.get("EMBY_WEBUI_HISTORY_FILE", str(DEFAULT_STATE_DIR / "history.jsonl")))
     parser.add_argument("--backup-dir", default=os.environ.get("EMBY_WEBUI_BACKUP_DIR", str(DEFAULT_BACKUP_DIR)))
+    parser.add_argument("--backup-keep", type=int, default=DEFAULT_BACKUP_KEEP)
     return parser.parse_args()
 
 
@@ -1987,7 +2122,7 @@ def main():
 
     history_file = Path(args.history_file).expanduser().resolve()
     backup_dir = Path(args.backup_dir).expanduser().resolve()
-    server = WebUIServer((args.host, args.port), Handler, script, access_key, history_file, backup_dir)
+    server = WebUIServer((args.host, args.port), Handler, script, access_key, history_file, backup_dir, args.backup_keep)
     url = f"http://{args.host}:{args.port}/"
     show_key_url = os.environ.get("EMBY_WEBUI_SHOW_KEY_URL", "1").lower() not in {"0", "false", "no", "off"}
     if access_key and show_key_url:
