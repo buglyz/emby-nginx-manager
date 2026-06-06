@@ -42,6 +42,12 @@ if PATH="$FAKE_BIN:$PATH" EMBY_NGINX_MANAGER_WEBUI_HTPASSWD='/tmp/bad path' sh "
 fi
 grep -q 'Basic Auth 文件 路径包含不支持的字符' "$TMP_DIR/output"
 
+if PATH="$FAKE_BIN:$PATH" NGINX_CONF_DIR='/tmp/bad path' sh "$ROOT/bin/emby" web-proxy-install web.example.com >/dev/null 2>"$TMP_DIR/output"; then
+    echo "invalid nginx conf dir was accepted" >&2
+    exit 1
+fi
+grep -q 'Nginx 配置目录 路径包含不支持的字符' "$TMP_DIR/output"
+
 ENV_FILE="$TMP_DIR/webui.env"
 printf 'EMBY_WEBUI_KEY=abcdefgh\n' > "$ENV_FILE"
 if PATH="$FAKE_BIN:$PATH" EMBY_NGINX_MANAGER_WEBUI_ENV="$ENV_FILE" EMBY_NGINX_MANAGER_WEBUI_HTPASSWD="$TMP_DIR/htpasswd" sh "$ROOT/bin/emby" web-proxy-install web.example.com --password-file "$TMP_DIR/missing-password" >/dev/null 2>"$TMP_DIR/output"; then

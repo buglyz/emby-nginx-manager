@@ -398,6 +398,14 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('"/"|""|*..*|*[[:space:]]*', deploy)
         self.assertIn("validate_lock_dir\n\n    $SUDO mkdir", deploy)
 
+    def test_webui_proxy_honors_configured_nginx_conf_dir(self):
+        root = Path(__file__).resolve().parents[1]
+        wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")
+
+        self.assertIn('NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"', wrapper)
+        self.assertIn('conf_file="$NGINX_CONF_DIR/$proxy_domain-443.conf"', wrapper)
+        self.assertNotIn('conf_file="/etc/nginx/conf.d/$proxy_domain-443.conf"', wrapper)
+
 
 if __name__ == "__main__":
     unittest.main()

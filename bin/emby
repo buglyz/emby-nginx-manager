@@ -7,6 +7,7 @@ ENV_FILE="${EMBY_NGINX_MANAGER_WEBUI_ENV:-/etc/emby-nginx-webui.env}"
 UNIT_FILE="/etc/systemd/system/$SERVICE_NAME"
 WEBUI_HTPASSWD="${EMBY_NGINX_MANAGER_WEBUI_HTPASSWD:-/etc/nginx/.htpasswd-emby-webui}"
 WEBUI_KEY_SNIPPET="${EMBY_NGINX_MANAGER_WEBUI_KEY_SNIPPET:-/etc/nginx/snippets/emby-webui-internal-key.conf}"
+NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
 
 if [ ! -f "$SCRIPT" ]; then
     SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -317,6 +318,7 @@ install_web_proxy() {
     validate_config_path "$ENV_FILE" "WebUI 环境文件"
     validate_config_path "$WEBUI_HTPASSWD" "Basic Auth 文件"
     validate_config_path "$WEBUI_KEY_SNIPPET" "内部密钥 snippet"
+    validate_config_path "$NGINX_CONF_DIR" "Nginx 配置目录"
     if ! command -v nginx >/dev/null 2>&1; then
         echo "错误: 找不到 nginx。" >&2
         exit 1
@@ -375,7 +377,7 @@ install_web_proxy() {
     cert_file=${cert_pair%%|*}
     key_file=${cert_pair#*|}
 
-    conf_file="/etc/nginx/conf.d/$proxy_domain-443.conf"
+    conf_file="$NGINX_CONF_DIR/$proxy_domain-443.conf"
     if $SUDO test -f "$conf_file" && ! $SUDO grep -q 'nre_webui_managed=true' "$conf_file"; then
         if [ "$force" != "yes" ]; then
             echo "错误: $conf_file 已存在且不是本命令管理的配置。需要覆盖请加 --force。" >&2
@@ -385,7 +387,7 @@ install_web_proxy() {
 
     install_htpasswd_if_needed "$basic_user"
 
-    $SUDO install -d /etc/nginx/snippets /etc/nginx/conf.d
+    $SUDO install -d "$(dirname "$WEBUI_KEY_SNIPPET")" "$NGINX_CONF_DIR"
     tmp_snippet=$(mktemp)
     printf 'proxy_set_header X-Emby-Webui-Key "%s";\n' "$webui_key" > "$tmp_snippet"
     $SUDO install -m 600 "$tmp_snippet" "$WEBUI_KEY_SNIPPET"
