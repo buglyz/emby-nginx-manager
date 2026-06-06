@@ -25,6 +25,7 @@ ACCESS_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{8,128}$")
 DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DNS_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 URL_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
+CONFIG_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
 BACKUP_NAME_RE = re.compile(r"^emby-nginx-manager-[0-9]{14}\.tar\.gz$")
 CERT_BACKUP_ARC_RE = re.compile(
     r"^etc/nginx/(?:certs/[^/]+/(?:cert|key)|ssl/[^/]+/(?:fullchain\.pem|privkey\.pem))$"
@@ -37,6 +38,7 @@ HISTORY_OUTPUT_TAIL = 4000
 COOKIE_NAME = "emby_webui_access"
 DEFAULT_STATE_DIR = Path(os.environ.get("EMBY_WEBUI_STATE_DIR", "/var/lib/emby-nginx-manager"))
 DEFAULT_BACKUP_DIR = Path(os.environ.get("EMBY_WEBUI_BACKUP_DIR", "/var/backups/emby-nginx-manager"))
+DEFAULT_NGINX_CONF_DIR = Path("/etc/nginx/conf.d")
 MANAGED_CONFIG_MARKERS = (
     "nre_emby_managed=true",
     "managed_by=nginx-reverse-emby-deploy",
@@ -1376,6 +1378,32 @@ def cert_backup_arcname_allowed(arcname):
     return bool(CERT_BACKUP_ARC_RE.fullmatch(arcname))
 
 
+def configured_nginx_conf_dir():
+    value = str(os.environ.get("NGINX_CONF_DIR", str(DEFAULT_NGINX_CONF_DIR))).strip()
+    if not value:
+        value = str(DEFAULT_NGINX_CONF_DIR)
+    if CONFIG_PATH_FORBIDDEN_RE.search(value) or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise WebUIError("Nginx 配置目录包含不支持的字符")
+    path = Path(value)
+    if not path.is_absolute() or path == Path("/") or ".." in path.parts:
+        raise WebUIError("Nginx 配置目录必须是安全的绝对路径")
+    return path
+
+
+def managed_nginx_config_arc_dirs():
+    return {
+        backup_arcname(DEFAULT_NGINX_CONF_DIR),
+        backup_arcname(configured_nginx_conf_dir()),
+    }
+
+
+def managed_nginx_config_arcname_allowed(arcname):
+    if arcname.startswith("/") or ".." in Path(arcname).parts:
+        return False
+    path = Path(arcname)
+    return path.suffix == ".conf" and str(path.parent) in managed_nginx_config_arc_dirs()
+
+
 def webui_service_restore_allowed(text):
     if not all(marker in text for marker in WEBUI_SERVICE_MARKERS):
         return False
@@ -1389,7 +1417,7 @@ def webui_service_restore_allowed(text):
 
 
 def restore_member_content_allowed(arcname, data):
-    if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
+    if managed_nginx_config_arcname_allowed(arcname):
         text = data.decode("utf-8", errors="ignore")
         return any(marker in text for marker in MANAGED_CONFIG_MARKERS)
     if arcname == "etc/systemd/system/emby-nginx-webui.service":
@@ -1460,7 +1488,7 @@ def load_restore_archive_members(tar):
         if total_size > RESTORE_MAX_TOTAL_BYTES:
             raise WebUIError("备份文件总大小过大")
         data = read_restore_member_data(tar, member)
-        if member.name.startswith("etc/nginx/conf.d/") and member.name.endswith(".conf"):
+        if managed_nginx_config_arcname_allowed(member.name):
             cert_refs.update(config_certificate_arcnames_from_data(data))
         items.append((member, data))
 
@@ -1502,7 +1530,7 @@ def config_certificate_paths(path):
 
 def collect_backup_files():
     files = []
-    conf_dir = Path("/etc/nginx/conf.d")
+    conf_dir = configured_nginx_conf_dir()
     if conf_dir.is_dir():
         for path in sorted(conf_dir.glob("*.conf")):
             if file_has_any_marker(path, MANAGED_CONFIG_MARKERS):
@@ -1651,7 +1679,7 @@ def restore_allowed_path(arcname):
         return True
     if cert_backup_arcname_allowed(arcname):
         return True
-    if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
+    if managed_nginx_config_arcname_allowed(arcname):
         return True
     return False
 
@@ -1670,7 +1698,7 @@ def restore_mode_for_arcname(arcname):
         return 0o640
     if arcname == "etc/systemd/system/emby-nginx-webui.service":
         return 0o644
-    if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
+    if managed_nginx_config_arcname_allowed(arcname):
         return 0o640
     return 0o600
 
@@ -1699,10 +1727,9 @@ def restore_backup_archive(backup_dir, name):
                 os.chmod(src, restore_mode_for_arcname(member.name))
 
         backup_existing = tmp_root_path / "existing"
-        for src in sorted(tmp_root_path.glob("etc/**/*")):
-            if not src.is_file():
-                continue
-            rel = src.relative_to(tmp_root_path)
+        for member, _data in sorted(items, key=lambda item: item[0].name):
+            src = tmp_root_path / member.name
+            rel = Path(member.name)
             dest = Path("/") / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists():

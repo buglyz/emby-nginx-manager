@@ -89,6 +89,18 @@ class RestorePathTests(unittest.TestCase):
             with self.subTest(arcname=arcname):
                 self.assertFalse(webui.restore_allowed_path(arcname))
 
+    def test_custom_nginx_conf_dir_restore_path_is_allowed(self):
+        original = webui.os.environ.get("NGINX_CONF_DIR")
+        try:
+            webui.os.environ["NGINX_CONF_DIR"] = "/opt/nginx/sites-enabled"
+            self.assertTrue(webui.restore_allowed_path("opt/nginx/sites-enabled/emby.example.com.conf"))
+            self.assertFalse(webui.restore_allowed_path("opt/nginx/other/emby.example.com.conf"))
+        finally:
+            if original is None:
+                webui.os.environ.pop("NGINX_CONF_DIR", None)
+            else:
+                webui.os.environ["NGINX_CONF_DIR"] = original
+
     def test_restore_modes_are_forced_by_path(self):
         cases = {
             "etc/nginx/certs/emby.example.com/key": 0o600,
@@ -189,8 +201,59 @@ class RestorePathTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(len(result["files"]), 3)
 
+    def test_restore_writes_custom_nginx_conf_dir_members(self):
+        original_env = webui.os.environ.get("NGINX_CONF_DIR")
+        original_run = webui.run_system_command
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf_dir = root / "sites-enabled"
+            conf = conf_dir / "emby.example.com.conf"
+            arcname = str(conf).lstrip("/")
+            backup_dir, name = self.make_archive(
+                {
+                    arcname: "# nre_emby_managed=true\nserver { listen 443 ssl; }\n",
+                }
+            )
+
+            try:
+                webui.os.environ["NGINX_CONF_DIR"] = str(conf_dir)
+                webui.run_system_command = lambda *args, **kwargs: {"ok": True, "output": ""}
+                result = webui.restore_backup_archive(backup_dir, name)
+            finally:
+                webui.run_system_command = original_run
+                if original_env is None:
+                    webui.os.environ.pop("NGINX_CONF_DIR", None)
+                else:
+                    webui.os.environ["NGINX_CONF_DIR"] = original_env
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(conf.read_text(encoding="utf-8"), "# nre_emby_managed=true\nserver { listen 443 ssl; }\n")
+
 
 class BackupArchiveTests(unittest.TestCase):
+    def test_collect_backup_files_uses_configured_nginx_conf_dir(self):
+        original = webui.os.environ.get("NGINX_CONF_DIR")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf_dir = root / "sites-enabled"
+            conf_dir.mkdir()
+            managed = conf_dir / "emby.example.com.conf"
+            unmanaged = conf_dir / "other.example.com.conf"
+            managed.write_text("# nre_emby_managed=true\nserver {}\n", encoding="utf-8")
+            unmanaged.write_text("server {}\n", encoding="utf-8")
+
+            try:
+                webui.os.environ["NGINX_CONF_DIR"] = str(conf_dir)
+                files = webui.collect_backup_files()
+            finally:
+                if original is None:
+                    webui.os.environ.pop("NGINX_CONF_DIR", None)
+                else:
+                    webui.os.environ["NGINX_CONF_DIR"] = original
+
+        self.assertIn(managed, files)
+        self.assertNotIn(unmanaged, files)
+
     def test_backup_archive_scrubs_owner_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
