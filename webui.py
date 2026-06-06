@@ -34,7 +34,6 @@ RESTORE_MAX_MEMBER_BYTES = 1024 * 1024
 RESTORE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 HISTORY_LIMIT = 200
 HISTORY_OUTPUT_TAIL = 4000
-DEFAULT_BACKUP_KEEP = int(os.environ.get("EMBY_WEBUI_BACKUP_KEEP", "20"))
 COOKIE_NAME = "emby_webui_access"
 DEFAULT_STATE_DIR = Path(os.environ.get("EMBY_WEBUI_STATE_DIR", "/var/lib/emby-nginx-manager"))
 DEFAULT_BACKUP_DIR = Path(os.environ.get("EMBY_WEBUI_BACKUP_DIR", "/var/backups/emby-nginx-manager"))
@@ -53,6 +52,19 @@ RESTORE_SKIP_ARCNAMES = {
     "etc/emby-nginx-webui.env",
     "etc/nginx/snippets/emby-webui-internal-key.conf",
 }
+
+
+def env_int(name, default, minimum=None):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+DEFAULT_BACKUP_KEEP = env_int("EMBY_WEBUI_BACKUP_KEEP", 20, minimum=1)
 
 
 HTML = r"""<!doctype html>

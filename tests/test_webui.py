@@ -180,6 +180,23 @@ class BackupArchiveTests(unittest.TestCase):
                         self.assertEqual(member.gname, "")
 
 
+class ConfigParsingTests(unittest.TestCase):
+    def test_env_int_falls_back_for_invalid_values(self):
+        original = webui.os.environ.get("TEST_WEBUI_INT")
+        try:
+            webui.os.environ["TEST_WEBUI_INT"] = "not-a-number"
+            self.assertEqual(webui.env_int("TEST_WEBUI_INT", 20, minimum=1), 20)
+            webui.os.environ["TEST_WEBUI_INT"] = "0"
+            self.assertEqual(webui.env_int("TEST_WEBUI_INT", 20, minimum=1), 20)
+            webui.os.environ["TEST_WEBUI_INT"] = "7"
+            self.assertEqual(webui.env_int("TEST_WEBUI_INT", 20, minimum=1), 7)
+        finally:
+            if original is None:
+                webui.os.environ.pop("TEST_WEBUI_INT", None)
+            else:
+                webui.os.environ["TEST_WEBUI_INT"] = original
+
+
 class RequestSafetyTests(unittest.TestCase):
     class DummyHandler:
         def __init__(self, headers, access_key="secret"):
