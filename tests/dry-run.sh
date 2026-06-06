@@ -7,7 +7,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 CONF_DIR="$TMP_DIR/conf.d"
 MAIN_CONF="$TMP_DIR/nginx.conf"
+FAKE_BIN="$TMP_DIR/bin"
 mkdir -p "$CONF_DIR"
+mkdir -p "$FAKE_BIN"
 cat > "$MAIN_CONF" <<EOF
 events {}
 http {
@@ -15,8 +17,32 @@ http {
 }
 EOF
 
+cat > "$FAKE_BIN/nginx" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    -t|-s)
+        exit 0
+        ;;
+esac
+echo "unexpected nginx invocation: $*" >&2
+exit 1
+EOF
+cat > "$FAKE_BIN/pgrep" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$FAKE_BIN/ss" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod 755 "$FAKE_BIN/nginx" "$FAKE_BIN/pgrep" "$FAKE_BIN/ss"
+
 run_dry() {
     NGINX_MAIN_CONF="$MAIN_CONF" NGINX_CONF_DIR="$CONF_DIR" "$ROOT/deploy.sh" --dry-run "$@" 2>/dev/null
+}
+
+run_fake_deploy() {
+    PATH="$FAKE_BIN:$PATH" NGINX_MAIN_CONF="$MAIN_CONF" NGINX_CONF_DIR="$CONF_DIR" "$ROOT/deploy.sh" "$@"
 }
 
 default_output=$(run_dry -y https://emby.example.com -r http://127.0.0.1:8096)
@@ -54,6 +80,15 @@ if run_dry -y https://symlink.example.com -r http://127.0.0.1:8096 >/dev/null 2>
     echo "symlink config target was accepted" >&2
     exit 1
 fi
+
+touch "$TMP_DIR/support-outside.conf"
+ln -s "$TMP_DIR/support-outside.conf" "$CONF_DIR/00-nre-emby-log-format.conf"
+if run_fake_deploy -y http://support-symlink.example.com -r http://127.0.0.1:8096 >/dev/null 2>"$TMP_DIR/output"; then
+    echo "symlink support config target was accepted" >&2
+    exit 1
+fi
+grep -q '拒绝写入非普通 Nginx 配置文件' "$TMP_DIR/output"
+rm -f "$CONF_DIR/00-nre-emby-log-format.conf"
 
 http_output=$(run_dry -y http://emby.example.com -r http://127.0.0.1:8096)
 printf '%s\n' "$http_output" | grep -Fq 'Block direct Emby web UI entry on HTTP-only frontends.'

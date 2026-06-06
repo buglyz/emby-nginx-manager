@@ -214,6 +214,14 @@ conf_path_is_regular_file() {
     $SUDO [ -f "$file" ] && ! $SUDO [ -L "$file" ]
 }
 
+reject_unsafe_conf_target() {
+    local file="$1"
+    if $SUDO [ -L "$file" ] || { $SUDO [ -e "$file" ] && ! conf_path_is_regular_file "$file"; }; then
+        log_error "拒绝写入非普通 Nginx 配置文件: $file"
+        exit 1
+    fi
+}
+
 rollback_generated_config() {
     if [[ -z "${generated_conf_path:-}" ]]; then
         return 0
@@ -1063,6 +1071,7 @@ nginx_support_config_path() {
 ensure_nginx_support_config() {
     local support_conf
     support_conf=$(nginx_support_config_path)
+    reject_unsafe_conf_target "$support_conf"
 
     if $SUDO [ -f "$support_conf" ]; then
         if ! conf_is_managed_emby_config "$support_conf"; then
@@ -1921,10 +1930,7 @@ EOF
             conf_path=$(default_nginx_conf_path "$clean_you_domain" "$you_frontend_port")
         fi
     fi
-    if $SUDO [ -L "$conf_path" ] || { $SUDO [ -e "$conf_path" ] && ! conf_path_is_regular_file "$conf_path"; }; then
-        log_error "拒绝写入非普通 Nginx 配置文件: $conf_path"
-        exit 1
-    fi
+    reject_unsafe_conf_target "$conf_path"
 
     local rendered_config
     rendered_config=$({
@@ -2084,6 +2090,7 @@ issue_certificate_webroot() {
     safe_name=$(printf '%s' "$format_cert_domain" | tr -c 'A-Za-z0-9_.-' '_')
     challenge_conf="$conf_dir/nre-acme-${safe_name}-80.conf"
     pending_conf="${generated_conf_path}.acme-pending.$$"
+    reject_unsafe_conf_target "$challenge_conf"
 
     log_info "检测到 Nginx 正在监听 80 端口，改用 webroot 模式申请证书。"
     $SUDO mkdir -p "$webroot/.well-known/acme-challenge"
