@@ -1505,6 +1505,10 @@ def cert_backup_path_allowed(path):
     return cert_backup_arcname_allowed(backup_arcname(path))
 
 
+def backup_source_file_allowed(path):
+    return path.is_file() and not path.is_symlink()
+
+
 def config_certificate_paths(path):
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -1523,7 +1527,7 @@ def config_certificate_paths(path):
         if value.startswith("$"):
             continue
         cert_path = Path(value)
-        if cert_backup_path_allowed(cert_path) and cert_path.is_file() and not cert_path.is_symlink():
+        if cert_backup_path_allowed(cert_path) and backup_source_file_allowed(cert_path):
             certs.append(cert_path)
     return certs
 
@@ -1533,7 +1537,7 @@ def collect_backup_files():
     conf_dir = configured_nginx_conf_dir()
     if conf_dir.is_dir():
         for path in sorted(conf_dir.glob("*.conf")):
-            if file_has_any_marker(path, MANAGED_CONFIG_MARKERS):
+            if backup_source_file_allowed(path) and file_has_any_marker(path, MANAGED_CONFIG_MARKERS):
                 files.append(path)
                 files.extend(config_certificate_paths(path))
 
@@ -1541,7 +1545,7 @@ def collect_backup_files():
         Path("/etc/nginx/.htpasswd-emby-webui"),
         Path("/etc/systemd/system/emby-nginx-webui.service"),
     ):
-        if path.is_file():
+        if backup_source_file_allowed(path):
             files.append(path)
 
     unique = []
@@ -1569,6 +1573,8 @@ def normalize_tar_info(info, mode=None):
 
 
 def add_backup_file(tar, path):
+    if not backup_source_file_allowed(path):
+        return
     arcname = backup_arcname(path)
     info = tar.gettarinfo(str(path), arcname=arcname)
     normalize_tar_info(info, mode=restore_mode_for_arcname(arcname))

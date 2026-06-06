@@ -254,6 +254,42 @@ class BackupArchiveTests(unittest.TestCase):
         self.assertIn(managed, files)
         self.assertNotIn(unmanaged, files)
 
+    def test_collect_backup_files_skips_symlinked_configs(self):
+        original = webui.os.environ.get("NGINX_CONF_DIR")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf_dir = root / "sites-enabled"
+            conf_dir.mkdir()
+            target = root / "target.conf"
+            symlink = conf_dir / "emby.example.com.conf"
+            target.write_text("# nre_emby_managed=true\nserver {}\n", encoding="utf-8")
+            symlink.symlink_to(target)
+
+            try:
+                webui.os.environ["NGINX_CONF_DIR"] = str(conf_dir)
+                files = webui.collect_backup_files()
+            finally:
+                if original is None:
+                    webui.os.environ.pop("NGINX_CONF_DIR", None)
+                else:
+                    webui.os.environ["NGINX_CONF_DIR"] = original
+
+        self.assertNotIn(symlink, files)
+
+    def test_add_backup_file_skips_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.conf"
+            symlink = root / "link.conf"
+            archive = root / "backup.tar"
+            target.write_text("# nre_emby_managed=true\nserver {}\n", encoding="utf-8")
+            symlink.symlink_to(target)
+
+            with tarfile.open(archive, "w") as tar:
+                webui.add_backup_file(tar, symlink)
+            with tarfile.open(archive, "r") as tar:
+                self.assertEqual(tar.getmembers(), [])
+
     def test_backup_archive_scrubs_owner_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
