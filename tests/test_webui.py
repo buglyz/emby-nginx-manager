@@ -265,6 +265,20 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertNotIn("trap \"rm -f '$TMP_INSTALL_SCRIPT'\" RETURN", deploy)
         self.assertIn("TMP_INSTALL_SCRIPT=$(mktemp)", deploy)
 
+    def test_webui_service_unit_has_sandbox_flags(self):
+        root = Path(__file__).resolve().parents[1]
+        wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")
+
+        for flag in (
+            "PrivateDevices=true",
+            "ProtectClock=true",
+            "ProtectHostname=true",
+            "RemoveIPC=true",
+            "RestrictNamespaces=true",
+        ):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, wrapper)
+
     def test_no_server_side_redirect_proxy_without_allowlist(self):
         root = Path(__file__).resolve().parents[1]
         deploy = (root / "deploy.sh").read_text(encoding="utf-8")

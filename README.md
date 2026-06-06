@@ -126,7 +126,7 @@ emby web-restart
 emby web-logs
 ```
 
-`web-install` writes `/etc/systemd/system/emby-nginx-webui.service`, creates `/etc/emby-nginx-webui.env` when missing, enables the service, and restarts it. The service listens on `127.0.0.1:8765` by default, keeps the internal access key out of the URL, and enables a conservative systemd sandbox (`PrivateTmp`, `ProtectHome`, kernel/control-group protections, and related hardening flags).
+`web-install` writes `/etc/systemd/system/emby-nginx-webui.service`, creates `/etc/emby-nginx-webui.env` when missing, enables the service, and restarts it. The service listens on `127.0.0.1:8765` by default, keeps the internal access key out of the URL, and enables a conservative systemd sandbox with private tmp/devices, `ProtectHome`, kernel/control-group/hostname/clock protections, and related hardening flags.
 
 Publish the WebUI through Nginx:
 

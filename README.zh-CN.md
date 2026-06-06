@@ -128,7 +128,7 @@ emby web-restart
 emby web-logs
 ```
 
-`web-install` 会写入 `/etc/systemd/system/emby-nginx-webui.service`，首次创建 `/etc/emby-nginx-webui.env`，启用并重启服务。服务默认监听 `127.0.0.1:8765`，不会把内部访问密钥放到 URL 里，并启用较保守的 systemd 沙箱配置，包括 `PrivateTmp`、`ProtectHome`、内核/控制组保护和相关限制。
+`web-install` 会写入 `/etc/systemd/system/emby-nginx-webui.service`，首次创建 `/etc/emby-nginx-webui.env`，启用并重启服务。服务默认监听 `127.0.0.1:8765`，不会把内部访问密钥放到 URL 里，并启用较保守的 systemd 沙箱配置，包括私有临时目录/设备、`ProtectHome`、内核/控制组/主机名/时钟保护和相关限制。
 
 通过 Nginx 发布 WebUI：
 
