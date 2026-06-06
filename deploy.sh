@@ -171,6 +171,7 @@ installation and only writes an extra file under /etc/nginx/conf.d/.
 管理选项:
   --menu                         启动交互式管理菜单。
   --list                         只列出本脚本添加的 Emby Nginx 配置。
+  --doctor                       检查 Nginx、证书和脚本管理的 Emby 配置。
   --remove <URL>                 移除指定域名的 Nginx 配置和证书。
   -Y, --yes                      非交互模式下自动确认移除。
 
@@ -607,6 +608,34 @@ conf_ssl_key_path() {
     ' "$file" 2>/dev/null
 }
 
+conf_cert_days_remaining() {
+    local file="$1"
+    local cert end_date end_epoch now days
+
+    if [[ "$(conf_uses_tls "$file")" != "yes" ]]; then
+        echo "-"
+        return 0
+    fi
+
+    cert=$(conf_ssl_cert_path "$file")
+    if [[ -z "$cert" ]] || ! $SUDO [ -f "$cert" ]; then
+        echo "missing"
+        return 0
+    fi
+
+    end_date=$($SUDO openssl x509 -enddate -noout -in "$cert" 2>/dev/null | sed 's/^notAfter=//') || {
+        echo "invalid"
+        return 0
+    }
+    end_epoch=$(date -d "$end_date" +%s 2>/dev/null) || {
+        echo "unknown"
+        return 0
+    }
+    now=$(date +%s)
+    days=$(((end_epoch - now) / 86400))
+    echo "$days"
+}
+
 load_nginx_config_files() {
     local conf_dir
     conf_dir=$(get_nginx_conf_dir)
@@ -697,19 +726,21 @@ default_nginx_conf_path() {
 }
 
 print_nginx_config_table() {
-    local i file domain port tls backend base short_backend
+    local i file domain port tls backend cert_days base short_backend
 
-    printf '%-4s %-32s %-7s %-5s %-38s %s\n' "编号" "域名" "端口" "TLS" "后端" "文件"
-    printf '%-4s %-32s %-7s %-5s %-38s %s\n' "----" "--------------------------------" "-------" "-----" "--------------------------------------" "----------------"
+    printf '%-4s %-32s %-7s %-5s %-8s %-38s %s\n' "编号" "域名" "端口" "TLS" "证书" "后端" "文件"
+    printf '%-4s %-32s %-7s %-5s %-8s %-38s %s\n' "----" "--------------------------------" "-------" "-----" "--------" "--------------------------------------" "----------------"
     for i in "${!CONFIG_FILES[@]}"; do
         file="${CONFIG_FILES[$i]}"
         domain=$(conf_server_name "$file")
         port=$(conf_listen_port "$file")
         tls=$(conf_uses_tls "$file")
         backend=$(conf_proxy_target "$file")
+        cert_days=$(conf_cert_days_remaining "$file")
         base=$(basename "$file")
         short_backend=$(shorten_text "${backend:--}" 38)
-        printf '%-4s %-32s %-7s %-5s %-38s %s\n' "$((i + 1))" "${domain:--}" "${port:--}" "$tls" "$short_backend" "$base"
+        [[ "$cert_days" =~ ^-?[0-9]+$ ]] && cert_days="${cert_days}d"
+        printf '%-4s %-32s %-7s %-5s %-8s %-38s %s\n' "$((i + 1))" "${domain:--}" "${port:--}" "$tls" "$cert_days" "$short_backend" "$base"
     done
 }
 
@@ -733,13 +764,14 @@ select_nginx_config() {
 
 show_nginx_config_detail() {
     local file="$1"
-    local domain port tls backend cert key
+    local domain port tls backend cert key cert_days
     domain=$(conf_server_name "$file")
     port=$(conf_listen_port "$file")
     tls=$(conf_uses_tls "$file")
     backend=$(conf_proxy_target "$file")
     cert=$(conf_ssl_cert_path "$file")
     key=$(conf_ssl_key_path "$file")
+    cert_days=$(conf_cert_days_remaining "$file")
 
     echo "--------------------------------------------------------"
     echo "配置文件: $file"
@@ -748,8 +780,193 @@ show_nginx_config_detail() {
     echo "TLS: $tls"
     echo "后端: ${backend:--}"
     [[ -n "$cert" ]] && echo "证书: $cert"
+    [[ "$cert_days" != "-" ]] && echo "证书剩余: $cert_days 天"
     [[ -n "$key" ]] && echo "私钥: $key"
     echo "--------------------------------------------------------"
+}
+
+nginx_support_config_path() {
+    echo "$(get_nginx_conf_dir)/00-nre-emby-log-format.conf"
+}
+
+ensure_nginx_support_config() {
+    local support_conf
+    support_conf=$(nginx_support_config_path)
+
+    if $SUDO [ -f "$support_conf" ]; then
+        if ! conf_is_managed_emby_config "$support_conf"; then
+            log_error "安全日志格式配置文件已存在且不是本脚本管理: $support_conf"
+            return 1
+        fi
+    fi
+
+    $SUDO mkdir -p "$(dirname "$support_conf")"
+    {
+        echo "# managed_by=nginx-reverse-emby-deploy"
+        echo "# nre_emby_managed=true"
+        echo "# support=log_format"
+        echo
+        echo "log_format nre_emby_safe '\$remote_addr - \$remote_user [\$time_local] \"\$request_method \$uri \$server_protocol\" '"
+        echo "                         '\$status \$body_bytes_sent \"-\" '"
+        echo "                         '\"\$http_user_agent\"';"
+    } | $SUDO tee "$support_conf" > /dev/null
+}
+
+doctor_ok() { echo -e "${GREEN}[OK]${NC} $1"; }
+doctor_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+doctor_fail() { echo -e "${RED}[FAIL]${NC} $1"; }
+
+doctor_frontend_url() {
+    local file="$1"
+    local domain port tls proto
+    domain=$(conf_server_name "$file")
+    port=$(conf_listen_port "$file")
+    tls=$(conf_uses_tls "$file")
+    [[ -z "$domain" ]] && return 1
+    proto=$([[ "$tls" == "yes" ]] && echo "https" || echo "http")
+    printf '%s://%s:%s/\n' "$proto" "$domain" "${port:-443}"
+}
+
+doctor_file_mtime_epoch() {
+    local file="$1"
+    $SUDO stat -c %Y "$file" 2>/dev/null || echo 0
+}
+
+doctor_log_cutoff_text() {
+    local newest=0 value file
+
+    if [[ -n "${support_conf:-}" ]] && $SUDO [ -f "$support_conf" ]; then
+        value=$(doctor_file_mtime_epoch "$support_conf")
+        [[ "$value" =~ ^[0-9]+$ ]] && ((value > newest)) && newest=$value
+    fi
+
+    for file in "${CONFIG_FILES[@]:-}"; do
+        value=$(doctor_file_mtime_epoch "$file")
+        [[ "$value" =~ ^[0-9]+$ ]] && ((value > newest)) && newest=$value
+    done
+
+    if ((newest > 0)); then
+        date -d "@$newest" '+%Y/%m/%d %H:%M:%S' 2>/dev/null || true
+    fi
+}
+
+run_doctor() {
+    local warnings=0 failures=0 file domain url code cert_days support_conf recent_errors log_cutoff
+
+    echo -e "${BLUE}========= Emby Nginx Doctor =========${NC}"
+
+    if command -v nginx >/dev/null 2>&1; then
+        if $SUDO nginx -t >/tmp/nre-nginx-doctor.log 2>&1; then
+            doctor_ok "Nginx 配置语法通过"
+        else
+            doctor_fail "Nginx 配置语法失败"
+            $SUDO sed -n '1,80p' /tmp/nre-nginx-doctor.log
+            failures=$((failures + 1))
+        fi
+    else
+        doctor_fail "未找到 nginx 命令"
+        failures=$((failures + 1))
+    fi
+
+    if pgrep -x nginx >/dev/null; then
+        doctor_ok "Nginx 正在运行"
+    else
+        doctor_fail "Nginx 未运行"
+        failures=$((failures + 1))
+    fi
+
+    support_conf=$(nginx_support_config_path)
+    if $SUDO grep -q 'log_format[[:space:]]\+nre_emby_safe' "$support_conf" 2>/dev/null; then
+        doctor_ok "已启用脚本管理的脱敏访问日志格式"
+    else
+        doctor_warn "未找到脱敏访问日志格式: $support_conf"
+        warnings=$((warnings + 1))
+    fi
+
+    if load_nginx_config_files >/dev/null 2>&1; then
+        doctor_ok "找到 ${#CONFIG_FILES[@]} 个脚本管理的 Emby 配置"
+        for file in "${CONFIG_FILES[@]}"; do
+            domain=$(conf_server_name "$file")
+            echo
+            echo "[$domain] $file"
+
+            if $SUDO grep -Eq 'listen[[:space:]].*quic|http3[[:space:]]+on|Alt-Svc.*h3|proxy_buffering[[:space:]]+on|proxy_temp_file|proxy_max_temp_file_size[[:space:]]+1024m|ssl_early_data[[:space:]]+on|Early-Data' "$file" 2>/dev/null; then
+                doctor_fail "存在已知不稳定或敏感配置，请检查 HTTP3/缓冲/Early-Data"
+                failures=$((failures + 1))
+            else
+                doctor_ok "反代稳定性配置正常"
+            fi
+
+            if $SUDO grep -q 'access_log[[:space:]].*nre_emby_safe' "$file" 2>/dev/null; then
+                doctor_ok "访问日志使用脱敏格式"
+            else
+                doctor_warn "访问日志未显式使用 nre_emby_safe"
+                warnings=$((warnings + 1))
+            fi
+
+            cert_days=$(conf_cert_days_remaining "$file")
+            if [[ "$cert_days" =~ ^-?[0-9]+$ ]]; then
+                if ((cert_days < 0)); then
+                    doctor_fail "证书已过期 ${cert_days#-} 天"
+                    failures=$((failures + 1))
+                elif ((cert_days < 15)); then
+                    doctor_warn "证书将在 $cert_days 天后过期"
+                    warnings=$((warnings + 1))
+                else
+                    doctor_ok "证书剩余 $cert_days 天"
+                fi
+            elif [[ "$cert_days" != "-" ]]; then
+                doctor_warn "证书状态: $cert_days"
+                warnings=$((warnings + 1))
+            fi
+
+            if command -v getent >/dev/null 2>&1 && getent ahosts "$domain" >/dev/null 2>&1; then
+                doctor_ok "DNS 可解析"
+            else
+                doctor_warn "DNS 解析检查未通过或系统缺少 getent"
+                warnings=$((warnings + 1))
+            fi
+
+            if command -v curl >/dev/null 2>&1; then
+                url=$(doctor_frontend_url "$file" || true)
+                if [[ -n "$url" ]]; then
+                    code=$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 8 "$url" 2>/dev/null || true)
+                    if [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]]; then
+                        doctor_ok "前端连通性正常 HTTP $code"
+                    else
+                        doctor_warn "前端连通性异常或超时: ${code:-no response}"
+                        warnings=$((warnings + 1))
+                    fi
+                fi
+            fi
+        done
+    else
+        doctor_warn "没有找到脚本管理的 Emby 配置"
+        warnings=$((warnings + 1))
+    fi
+
+    log_cutoff=$(doctor_log_cutoff_text)
+    if [[ -n "$log_cutoff" ]]; then
+        recent_errors=$($SUDO tail -n 1000 /var/log/nginx/error.log 2>/dev/null | awk -v cutoff="$log_cutoff" '$1 " " $2 >= cutoff' | grep -Ei 'proxy_temp|Permission denied|upstream.*(reset|timed out|timeout)|broken pipe|quic|http3' | tail -n 10 || true)
+    else
+        recent_errors=$($SUDO tail -n 500 /var/log/nginx/error.log 2>/dev/null | grep -Ei 'proxy_temp|Permission denied|upstream.*(reset|timed out|timeout)|broken pipe|quic|http3' | tail -n 10 || true)
+    fi
+    echo
+    if [[ -n "$recent_errors" ]]; then
+        if [[ -n "$log_cutoff" ]]; then
+            doctor_warn "配置更新后 Nginx 错误日志中仍有相关记录:"
+        else
+            doctor_warn "最近 Nginx 错误日志中仍有相关记录:"
+        fi
+        printf '%s\n' "$recent_errors" | sed -E 's/(api_key=)[^ &"]+/\1<redacted>/g'
+        warnings=$((warnings + 1))
+    else
+        doctor_ok "最近错误日志未发现 proxy_temp/reset/timeout/quic 相关记录"
+    fi
+
+    echo
+    echo "结果: failures=$failures warnings=$warnings"
+    ((failures == 0))
 }
 
 view_nginx_configs_menu() {
@@ -954,6 +1171,7 @@ interactive_manage_menu() {
         echo "2. 新增反代配置"
         echo "3. 修改现有配置"
         echo "4. 删除现有配置"
+        echo "5. 运行健康检查"
         echo "0. 退出"
         echo "======================================"
         read -rp "请选择操作: " choice
@@ -962,6 +1180,7 @@ interactive_manage_menu() {
             2) add_nginx_config_menu || true ;;
             3) edit_nginx_config_menu || true ;;
             4) remove_nginx_config_menu || true ;;
+            5) run_doctor || true ;;
             0) exit 0 ;;
             *) log_warn "无效选项，请重新选择。" ;;
         esac
@@ -987,6 +1206,7 @@ parse_arguments() {
     manual_gh_proxy=""
     manage_menu="no"
     list_configs="no"
+    doctor_mode="no"
     dry_run="no"
     target_conf_path=""
     skip_certificate_issue="no"
@@ -997,7 +1217,7 @@ parse_arguments() {
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,gh-proxy:,remove:,yes,template-domain-config:,no-proxy-redirect,menu,list,dry-run,help -n "$(basename "$0")" -- "$@"); then
+    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,gh-proxy:,remove:,yes,template-domain-config:,no-proxy-redirect,menu,list,doctor,dry-run,help -n "$(basename "$0")" -- "$@"); then
         exit 1
     fi
     eval set -- "$TEMP"
@@ -1018,6 +1238,7 @@ parse_arguments() {
             -Y|--yes) force_yes="yes"; shift ;;
             --menu) manage_menu="yes"; shift ;;
             --list) list_configs="yes"; shift ;;
+            --doctor) doctor_mode="yes"; shift ;;
             --dry-run) dry_run="yes"; shift ;;
             -h|--help) show_help; shift ;;
             --) shift; break ;;
@@ -1407,6 +1628,8 @@ export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[
         echo "--------------------------------------------------------------"
         return 0
     fi
+
+    ensure_nginx_support_config || exit 1
 
     generated_conf_path="$conf_path"
     backup_file "$conf_path"
@@ -1845,6 +2068,13 @@ test_and_reload_nginx() {
 main() {
     local arg_count=$#
     parse_arguments "$@"
+
+    if [[ "$doctor_mode" == "yes" ]]; then
+        if run_doctor; then
+            exit 0
+        fi
+        exit 1
+    fi
 
     if [[ "$list_configs" == "yes" ]]; then
         list_nginx_configs

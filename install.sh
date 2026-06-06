@@ -54,3 +54,4 @@ $SUDO install -m 755 "$SRC_DIR/bin/emby" "$BIN_DIR/emby"
 
 echo "安装完成。"
 echo "运行: emby"
+echo "健康检查: emby --doctor"

@@ -44,6 +44,16 @@ List configs created by this script:
 emby --list
 ```
 
+The list only shows managed Emby configs and includes certificate remaining days when TLS is enabled.
+
+Run a health check:
+
+```bash
+emby --doctor
+```
+
+`--doctor` checks Nginx syntax, managed configs, certificate status, frontend reachability, and recent Nginx error logs.
+
 ## SSH Shortcut
 
 The installer creates the shortcut command:
@@ -62,6 +72,7 @@ Arguments are passed through:
 
 ```bash
 emby --list
+emby --doctor
 emby --dry-run -y https://emby.example.com -r http://127.0.0.1:8096
 ```
 
@@ -75,6 +86,16 @@ Generated Nginx config files include:
 ```
 
 The menu and `--list` only show configs with this marker, so unrelated Nginx sites are not managed accidentally.
+
+## Safe Access Logs
+
+Managed configs write access logs to:
+
+```text
+/var/log/nginx/emby-nginx-manager-access.log
+```
+
+The script also installs a managed `nre_emby_safe` log format under Nginx `conf.d`. It logs the request path without query strings and does not log Referer, reducing sensitive data in access logs.
 
 ## Files
 
