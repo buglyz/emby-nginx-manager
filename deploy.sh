@@ -2141,8 +2141,9 @@ remove_domain_config() {
             # 精确判断是否共享证书: 是否被其他 conf 引用
             local current_conf_basename
             current_conf_basename=$(basename "$nginx_conf_file")
-            local other_refs
-            other_refs=$($SUDO grep -Rsl -F "$cert_full_path" /etc/nginx/conf.d --exclude="$current_conf_basename" 2>/dev/null || true)
+            local other_refs conf_dir
+            conf_dir=$(get_nginx_conf_dir)
+            other_refs=$($SUDO grep -Rsl -F "$cert_full_path" "$conf_dir" --exclude="$current_conf_basename" 2>/dev/null || true)
             if [[ -n "$other_refs" ]]; then
                 cert_shared="yes"
             fi

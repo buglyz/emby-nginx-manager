@@ -310,6 +310,13 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertNotIn("proxy_pass $saved_redirect_location", deploy)
         self.assertNotIn("proxy_intercept_errors on;", deploy)
 
+    def test_remove_uses_configured_nginx_conf_dir_for_cert_refs(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn('grep -Rsl -F "$cert_full_path" /etc/nginx/conf.d', deploy)
+        self.assertIn('conf_dir=$(get_nginx_conf_dir)', deploy)
+
 
 if __name__ == "__main__":
     unittest.main()
