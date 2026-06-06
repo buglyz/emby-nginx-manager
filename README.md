@@ -148,6 +148,12 @@ WebUI environment variables:
 | `EMBY_WEBUI_BACKUP_KEEP` | Number of backup archives to keep. Defaults to `20`. |
 | `EMBY_WEBUI_BACKUP_DIR` | Backup directory. Defaults to `/var/backups/emby-nginx-manager`. |
 | `EMBY_WEBUI_HISTORY_FILE` | Operation history file. Defaults under `/var/lib/emby-nginx-manager`. |
+| `EMBY_WEBUI_BASIC_USER` | Basic Auth username created by `web-proxy-install`. Defaults to `admin`. |
+| `EMBY_WEBUI_BASIC_PASSWORD` | Non-interactive Basic Auth password; `--password-file` is also supported. |
+| `EMBY_NGINX_MANAGER_WEBUI_SERVICE` | Override the WebUI systemd service name. Must be a safe `.service` name. |
+| `EMBY_NGINX_MANAGER_WEBUI_ENV` | Override the WebUI environment file. Defaults to `/etc/emby-nginx-webui.env`. |
+| `EMBY_NGINX_MANAGER_WEBUI_HTPASSWD` | Override the WebUI Basic Auth file. Defaults to `/etc/nginx/.htpasswd-emby-webui`. |
+| `EMBY_NGINX_MANAGER_WEBUI_KEY_SNIPPET` | Override the internal-key Nginx snippet. Defaults to `/etc/nginx/snippets/emby-webui-internal-key.conf`. |
 
 The WebUI records recent preview, deploy, remove, doctor, backup, and restore operations. Long-running operations are serialized so multiple browser sessions cannot write Nginx at the same time. Backups are stored under `/var/backups/emby-nginx-manager` and cover managed Emby Nginx configs plus WebUI service/proxy files. Backups do not include the internal WebUI access key. Restore actions preview the file list before applying changes, and old backups are pruned after the newest 20 by default. Set `EMBY_WEBUI_BACKUP_KEEP` to change the retention count.
 

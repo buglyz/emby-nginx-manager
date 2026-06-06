@@ -150,6 +150,12 @@ WebUI 环境变量：
 | `EMBY_WEBUI_BACKUP_KEEP` | 保留的备份数量，默认 `20`。 |
 | `EMBY_WEBUI_BACKUP_DIR` | 备份目录，默认 `/var/backups/emby-nginx-manager`。 |
 | `EMBY_WEBUI_HISTORY_FILE` | 操作历史文件，默认位于 `/var/lib/emby-nginx-manager` 下。 |
+| `EMBY_WEBUI_BASIC_USER` | `web-proxy-install` 创建 Basic Auth 时使用的用户名，默认 `admin`。 |
+| `EMBY_WEBUI_BASIC_PASSWORD` | 非交互创建 Basic Auth 时使用的密码；也可以用 `--password-file`。 |
+| `EMBY_NGINX_MANAGER_WEBUI_SERVICE` | 覆盖 WebUI systemd 服务名，必须是安全的 `.service` 名称。 |
+| `EMBY_NGINX_MANAGER_WEBUI_ENV` | 覆盖 WebUI 环境文件路径，默认 `/etc/emby-nginx-webui.env`。 |
+| `EMBY_NGINX_MANAGER_WEBUI_HTPASSWD` | 覆盖 WebUI Basic Auth 文件路径，默认 `/etc/nginx/.htpasswd-emby-webui`。 |
+| `EMBY_NGINX_MANAGER_WEBUI_KEY_SNIPPET` | 覆盖内部密钥 Nginx snippet 路径，默认 `/etc/nginx/snippets/emby-webui-internal-key.conf`。 |
 
 快速检查 WebUI：
 
