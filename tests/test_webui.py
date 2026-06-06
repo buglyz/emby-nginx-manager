@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 import webui
@@ -38,6 +39,14 @@ class DeployArgsTests(unittest.TestCase):
 
 
 class RestorePathTests(unittest.TestCase):
+    def member(self, name, size=1):
+        return SimpleNamespace(
+            name=name,
+            size=size,
+            isdir=lambda: False,
+            isfile=lambda: True,
+        )
+
     def test_certificate_restore_paths_are_allowed(self):
         allowed = [
             "etc/nginx/certs/emby.example.com/cert",
@@ -76,6 +85,28 @@ class RestorePathTests(unittest.TestCase):
         for arcname, mode in cases.items():
             with self.subTest(arcname=arcname):
                 self.assertEqual(webui.restore_mode_for_arcname(arcname), mode)
+
+    def test_managed_nginx_config_restore_content_is_allowed(self):
+        member = self.member("etc/nginx/conf.d/emby.example.com-443.conf")
+        data = b"# nre_emby_managed=true\nserver { listen 443 ssl; }\n"
+
+        webui.validate_restore_member(member, data)
+
+    def test_unmanaged_nginx_config_restore_content_is_rejected(self):
+        member = self.member("etc/nginx/conf.d/evil.example.com.conf")
+        data = b"server { listen 80; server_name evil.example.com; }\n"
+
+        with self.assertRaises(webui.WebUIError):
+            webui.validate_restore_member(member, data)
+
+    def test_oversized_restore_member_is_rejected(self):
+        member = self.member(
+            "etc/nginx/conf.d/emby.example.com-443.conf",
+            size=webui.RESTORE_MAX_MEMBER_BYTES + 1,
+        )
+
+        with self.assertRaises(webui.WebUIError):
+            webui.validate_restore_member(member)
 
 
 class RequestSafetyTests(unittest.TestCase):
@@ -122,6 +153,37 @@ class RequestSafetyTests(unittest.TestCase):
         self.assertTrue(
             self.same_origin({"Host": "web.example.com", "Origin": "https://web.example.com"})
         )
+
+    def test_forwarded_origin_is_accepted_behind_reverse_proxy(self):
+        self.assertTrue(
+            self.same_origin(
+                {
+                    "Host": "127.0.0.1:8765",
+                    "Origin": "https://web.example.com",
+                    "X-Forwarded-Host": "web.example.com",
+                    "X-Forwarded-Proto": "https",
+                }
+            )
+        )
+
+    def test_forwarded_origin_scheme_must_match(self):
+        self.assertFalse(
+            self.same_origin(
+                {
+                    "Host": "127.0.0.1:8765",
+                    "Origin": "http://web.example.com",
+                    "X-Forwarded-Host": "web.example.com",
+                    "X-Forwarded-Proto": "https",
+                }
+            )
+        )
+
+    def test_access_cookie_is_secure_when_forwarded_https(self):
+        handler = self.DummyHandler({"X-Forwarded-Proto": "https"}, access_key="secret")
+        cookie = webui.Handler.access_cookie_header(handler)
+
+        self.assertIn("Secure", cookie)
+        self.assertIn("HttpOnly", cookie)
 
 
 class StaticSafetyTests(unittest.TestCase):

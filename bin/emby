@@ -242,7 +242,7 @@ install_htpasswd_if_needed() {
     hash=$(printf '%s\n' "$password" | openssl passwd -apr1 -stdin)
     tmp_htpasswd=$(mktemp)
     printf '%s:%s\n' "$basic_user" "$hash" > "$tmp_htpasswd"
-    $SUDO install -m 644 "$tmp_htpasswd" "$WEBUI_HTPASSWD"
+    $SUDO install -m 640 "$tmp_htpasswd" "$WEBUI_HTPASSWD"
     rm -f "$tmp_htpasswd"
     if getent group nginx >/dev/null 2>&1; then
         $SUDO chgrp nginx "$WEBUI_HTPASSWD" || true

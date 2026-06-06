@@ -30,6 +30,8 @@ CERT_BACKUP_ARC_RE = re.compile(
     r"^etc/nginx/(?:certs/[^/]+/(?:cert|key)|ssl/[^/]+/(?:fullchain\.pem|privkey\.pem))$"
 )
 MAX_BODY_BYTES = 64 * 1024
+RESTORE_MAX_MEMBER_BYTES = 1024 * 1024
+RESTORE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 HISTORY_LIMIT = 200
 HISTORY_OUTPUT_TAIL = 4000
 DEFAULT_BACKUP_KEEP = int(os.environ.get("EMBY_WEBUI_BACKUP_KEEP", "20"))
@@ -41,6 +43,11 @@ MANAGED_CONFIG_MARKERS = (
     "managed_by=nginx-reverse-emby-deploy",
     "nre_webui_managed=true",
     "managed_by=emby-nginx-manager-webui",
+)
+WEBUI_SERVICE_MARKERS = (
+    "Description=Emby Nginx Manager WebUI",
+    "ExecStart=",
+    "webui.py",
 )
 RESTORE_SKIP_ARCNAMES = {
     "etc/emby-nginx-webui.env",
@@ -1337,6 +1344,31 @@ def cert_backup_arcname_allowed(arcname):
     return bool(CERT_BACKUP_ARC_RE.fullmatch(arcname))
 
 
+def restore_member_content_allowed(arcname, data):
+    if arcname.startswith("etc/nginx/conf.d/") and arcname.endswith(".conf"):
+        text = data.decode("utf-8", errors="ignore")
+        return any(marker in text for marker in MANAGED_CONFIG_MARKERS)
+    if arcname == "etc/systemd/system/emby-nginx-webui.service":
+        text = data.decode("utf-8", errors="ignore")
+        return all(marker in text for marker in WEBUI_SERVICE_MARKERS)
+    if arcname == "etc/nginx/.htpasswd-emby-webui":
+        return b"\n" not in data.rstrip(b"\n") and b":" in data
+    if cert_backup_arcname_allowed(arcname):
+        return bool(data)
+    return True
+
+
+def validate_restore_member(member, data=None):
+    if member.isdir() or member.name == "manifest.json" or member.name in RESTORE_SKIP_ARCNAMES:
+        return
+    if not member.isfile() or not restore_allowed_path(member.name):
+        raise WebUIError(f"备份包含不允许恢复的路径: {member.name}")
+    if member.size < 0 or member.size > RESTORE_MAX_MEMBER_BYTES:
+        raise WebUIError(f"备份文件过大或大小无效: {member.name}")
+    if data is not None and not restore_member_content_allowed(member.name, data):
+        raise WebUIError(f"备份文件内容缺少托管标记或格式无效: {member.name}")
+
+
 def cert_backup_path_allowed(path):
     if not path.is_absolute():
         return False
@@ -1478,6 +1510,7 @@ def preview_backup_archive(backup_dir, name):
 
     files = []
     skipped = []
+    total_size = 0
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar.getmembers():
             if member.isdir() or member.name == "manifest.json":
@@ -1485,8 +1518,17 @@ def preview_backup_archive(backup_dir, name):
             if member.name in RESTORE_SKIP_ARCNAMES:
                 skipped.append(member.name)
                 continue
-            if not member.isfile() or not restore_allowed_path(member.name):
-                raise WebUIError(f"备份包含不允许恢复的路径: {member.name}")
+            validate_restore_member(member)
+            total_size += member.size
+            if total_size > RESTORE_MAX_TOTAL_BYTES:
+                raise WebUIError("备份文件总大小过大")
+            handle = tar.extractfile(member)
+            if handle is None:
+                raise WebUIError(f"无法读取备份文件: {member.name}")
+            data = handle.read(RESTORE_MAX_MEMBER_BYTES + 1)
+            if len(data) != member.size:
+                raise WebUIError(f"备份文件大小不一致: {member.name}")
+            validate_restore_member(member, data)
             files.append({"path": "/" + member.name, "size": member.size})
     return {"ok": True, "name": name, "files": files, "skipped": skipped}
 
@@ -1546,13 +1588,16 @@ def restore_backup_archive(backup_dir, name):
         tmp_root_path = Path(tmp_root)
         with tarfile.open(archive, "r:gz") as tar:
             members = []
+            total_size = 0
             for member in tar.getmembers():
                 if member.isdir() or member.name == "manifest.json":
                     continue
                 if member.name in RESTORE_SKIP_ARCNAMES:
                     continue
-                if not member.isfile() or not restore_allowed_path(member.name):
-                    raise WebUIError(f"备份包含不允许恢复的路径: {member.name}")
+                validate_restore_member(member)
+                total_size += member.size
+                if total_size > RESTORE_MAX_TOTAL_BYTES:
+                    raise WebUIError("备份文件总大小过大")
                 members.append(member)
 
             for member in members:
@@ -1561,8 +1606,12 @@ def restore_backup_archive(backup_dir, name):
                 handle = tar.extractfile(member)
                 if handle is None:
                     raise WebUIError(f"无法读取备份文件: {member.name}")
+                data = handle.read(RESTORE_MAX_MEMBER_BYTES + 1)
+                if len(data) != member.size:
+                    raise WebUIError(f"备份文件大小不一致: {member.name}")
+                validate_restore_member(member, data)
                 with src.open("wb") as output:
-                    shutil.copyfileobj(handle, output)
+                    output.write(data)
                 os.chmod(src, restore_mode_for_arcname(member.name))
 
         backup_existing = tmp_root_path / "existing"
@@ -2069,13 +2118,40 @@ class Handler(BaseHTTPRequestHandler):
         return cookies
 
     def access_cookie_header(self):
-        return f"{COOKIE_NAME}={self.server.access_key}; Path=/; Max-Age=43200; HttpOnly; SameSite=Strict"
+        parts = [
+            f"{COOKIE_NAME}={self.server.access_key}",
+            "Path=/",
+            "Max-Age=43200",
+            "HttpOnly",
+            "SameSite=Strict",
+        ]
+        if self.headers.get("X-Forwarded-Proto", "") == "https":
+            parts.append("Secure")
+        return "; ".join(parts)
 
     def same_origin_request(self):
         origin = self.headers.get("Origin", "")
         if origin:
             parsed = urlparse(origin)
-            return parsed.netloc == self.headers.get("Host", "")
+            host = self.headers.get("Host", "")
+            forwarded_proto = self.headers.get("X-Forwarded-Proto", "")
+            if host and parsed.netloc == host and (not forwarded_proto or parsed.scheme == forwarded_proto):
+                return True
+            forwarded_host = self.headers.get("X-Forwarded-Host", "")
+            origin_host = parsed.netloc
+            if forwarded_host and origin_host == forwarded_host and (
+                not forwarded_proto or parsed.scheme == forwarded_proto
+            ):
+                return True
+            forwarded_port = self.headers.get("X-Forwarded-Port", "")
+            if forwarded_host and forwarded_proto:
+                expected = forwarded_host
+                if forwarded_port and ":" not in forwarded_host:
+                    default_port = "443" if forwarded_proto == "https" else "80"
+                    if forwarded_port != default_port:
+                        expected = f"{forwarded_host}:{forwarded_port}"
+                return parsed.scheme == forwarded_proto and origin_host == expected
+            return False
         fetch_site = self.headers.get("Sec-Fetch-Site", "")
         if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
             return False
