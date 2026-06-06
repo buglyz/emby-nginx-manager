@@ -596,6 +596,15 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn('"/"|""|*..*|*[[:space:]]*', deploy)
         self.assertIn("validate_lock_dir\n\n    $SUDO mkdir", deploy)
 
+    def test_deploy_rejects_symlink_config_paths(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn('conf_path_is_regular_file()', deploy)
+        self.assertIn('$SUDO [ -f "$file" ] && ! $SUDO [ -L "$file" ]', deploy)
+        self.assertIn('拒绝写入非普通 Nginx 配置文件', deploy)
+        self.assertIn('拒绝备份符号链接配置文件', deploy)
+
     def test_webui_proxy_honors_configured_nginx_conf_dir(self):
         root = Path(__file__).resolve().parents[1]
         wrapper = (root / "bin" / "emby").read_text(encoding="utf-8")

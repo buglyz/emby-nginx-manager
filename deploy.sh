@@ -194,7 +194,11 @@ backup_file() {
     local file_path="$1"
     local backup_dir="${BACKUP_DIR:-/etc/nginx/backup}"
     last_backup_path=""
-    if [ -f "$file_path" ]; then
+    if $SUDO [ -L "$file_path" ]; then
+        log_error "拒绝备份符号链接配置文件: $file_path"
+        exit 1
+    fi
+    if $SUDO [ -f "$file_path" ]; then
         $SUDO mkdir -p "$backup_dir"
         local file_name
         file_name=$(basename "$file_path")
@@ -203,6 +207,11 @@ backup_file() {
         last_backup_path="$backup_dir/$backup_name"
         log_info "已备份文件 $file_path 至 $backup_dir/$backup_name"
     fi
+}
+
+conf_path_is_regular_file() {
+    local file="$1"
+    $SUDO [ -f "$file" ] && ! $SUDO [ -L "$file" ]
 }
 
 rollback_generated_config() {
@@ -706,6 +715,7 @@ conf_metadata_value() {
 conf_is_managed_emby_config() {
     local file="$1"
     local marker managed_by
+    conf_path_is_regular_file "$file" || return 1
     marker=$(conf_metadata_value "$file" "nre_emby_managed")
     managed_by=$(conf_metadata_value "$file" "managed_by")
 
@@ -911,7 +921,7 @@ find_nginx_conf_file() {
         "$conf_dir/${clean_domain}-${port}.conf" \
         "$conf_dir/${clean_domain}.${port}.conf" \
         "$conf_dir/${clean_domain}.conf"; do
-        if $SUDO [ -f "$candidate" ] && conf_is_managed_emby_config "$candidate"; then
+        if conf_path_is_regular_file "$candidate" && conf_is_managed_emby_config "$candidate"; then
             echo "$candidate"
             return 0
         fi
@@ -940,7 +950,7 @@ find_any_nginx_conf_file() {
         "$conf_dir/${clean_domain}-${port}.conf" \
         "$conf_dir/${clean_domain}.${port}.conf" \
         "$conf_dir/${clean_domain}.conf"; do
-        if $SUDO [ -f "$candidate" ]; then
+        if conf_path_is_regular_file "$candidate"; then
             echo "$candidate"
             return 0
         fi
@@ -1891,6 +1901,10 @@ EOF
             fi
             conf_path=$(default_nginx_conf_path "$clean_you_domain" "$you_frontend_port")
         fi
+    fi
+    if $SUDO [ -L "$conf_path" ] || { $SUDO [ -e "$conf_path" ] && ! conf_path_is_regular_file "$conf_path"; }; then
+        log_error "拒绝写入非普通 Nginx 配置文件: $conf_path"
+        exit 1
     fi
 
     local rendered_config
