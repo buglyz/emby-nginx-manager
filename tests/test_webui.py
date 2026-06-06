@@ -466,6 +466,25 @@ class ConfigParsingTests(unittest.TestCase):
             else:
                 webui.os.environ["EMBY_WEBUI_PORT"] = original_env
 
+    def test_main_rejects_symlink_script_path(self):
+        original_argv = sys.argv[:]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "deploy.sh"
+            link = root / "link-deploy.sh"
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            link.symlink_to(target)
+            sys.argv = ["webui.py", "--script", str(link)]
+            try:
+                old_stderr = sys.stderr
+                sys.stderr = io.StringIO()
+                try:
+                    self.assertEqual(webui.main(), 1)
+                finally:
+                    sys.stderr = old_stderr
+            finally:
+                sys.argv = original_argv
+
 
 class RequestSafetyTests(unittest.TestCase):
     class DummyHandler:

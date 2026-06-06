@@ -2457,7 +2457,11 @@ def main():
     if args.port < 1 or args.port > 65535:
         print("错误: WebUI 端口必须在 1-65535 之间。", file=sys.stderr)
         return 1
-    script = Path(args.script).expanduser().resolve()
+    script_arg = Path(args.script).expanduser()
+    if script_arg.is_symlink():
+        print(f"错误: 管理脚本不能是符号链接: {script_arg}", file=sys.stderr)
+        return 1
+    script = script_arg.resolve()
     if not script.is_file():
         print(f"错误: 找不到管理脚本: {script}", file=sys.stderr)
         return 1
