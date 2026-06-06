@@ -364,6 +364,14 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertIn("token|password|secret|access_key", deploy)
         self.assertIn("printf '%s\\n' \"$recent_errors\" | redact_sensitive_stream", deploy)
 
+    def test_deploy_validates_lock_dir_before_rm_rf(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("validate_lock_dir()", deploy)
+        self.assertIn('"/"|""|*..*|*[[:space:]]*', deploy)
+        self.assertIn("validate_lock_dir\n\n    $SUDO mkdir", deploy)
+
 
 if __name__ == "__main__":
     unittest.main()

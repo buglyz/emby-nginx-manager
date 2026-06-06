@@ -112,10 +112,28 @@ LOCK_DIR="${NRE_LOCK_DIR:-/run/lock/emby-nginx-manager.lockdir}"
 LOCK_WAIT_SECONDS="${NRE_LOCK_WAIT_SECONDS:-30}"
 LOCK_HELD=""
 
+validate_lock_dir() {
+    case "$LOCK_DIR" in
+        /*)
+            ;;
+        *)
+            log_error "锁目录必须使用绝对路径: $LOCK_DIR"
+            exit 1
+            ;;
+    esac
+    case "$LOCK_DIR" in
+        "/"|""|*..*|*[[:space:]]*|*";"*|*"{"*|*"}"*|*"'"*|*"\""*|*"\\"*)
+            log_error "锁目录路径不安全: $LOCK_DIR"
+            exit 1
+            ;;
+    esac
+}
+
 acquire_lock() {
     local waited=0 pid owner_uid current_uid
 
     [[ -n "$LOCK_HELD" ]] && return 0
+    validate_lock_dir
 
     $SUDO mkdir -p "$(dirname "$LOCK_DIR")"
     current_uid=$(id -u)
