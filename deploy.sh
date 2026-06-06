@@ -1697,6 +1697,20 @@ generate_nginx_config() {
         export you_domain_path_rewrite="rewrite ^${source_path_regex}(?:/(.*))?\$ ${target_path_replacement}/\$1 break;"
     fi
 
+    local block_web_regex
+    if [[ "${you_domain_path:-/}" == "/" ]]; then
+        block_web_regex='^/(?:$|web(?:/.*)?)$'
+    else
+        block_web_regex="^${source_path_regex}(?:$|/web(?:/.*)?)$"
+    fi
+    export block_web_config=$(cat <<EOF
+    # Block direct Emby web UI entry on HTTP-only frontends.
+    location ~ ${block_web_regex} {
+        return 403;
+    }
+EOF
+)
+
     if [[ -z "$ssl_certificate_path" ]]; then
         ssl_certificate_path="/etc/nginx/certs/$format_cert_domain/cert"
     fi
@@ -1771,7 +1785,7 @@ EOF
         export handle_redirect_config=''
     fi
 
-    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $ssl_certificate_path $ssl_certificate_key_path $acme_http_webroot $you_domain_path $you_domain_path_rewrite $r_domain_full $location_proxy_redirect $backstream_config $handle_redirect_config'
+    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $ssl_certificate_path $ssl_certificate_key_path $acme_http_webroot $you_domain_path $you_domain_path_rewrite $r_domain_full $location_proxy_redirect $backstream_config $handle_redirect_config $block_web_config'
 
     local clean_you_domain="${you_domain//[\[\]]/}"
     local conf_path conflict_path

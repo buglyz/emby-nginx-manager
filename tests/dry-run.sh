@@ -35,3 +35,11 @@ if run_dry -y 'https://bad.example.com;root=/tmp' -r http://127.0.0.1:8096 >/dev
     echo "invalid frontend host was accepted" >&2
     exit 1
 fi
+
+http_output=$(run_dry -y http://emby.example.com -r http://127.0.0.1:8096)
+printf '%s\n' "$http_output" | grep -Fq 'Block direct Emby web UI entry on HTTP-only frontends.'
+printf '%s\n' "$http_output" | grep -Fq 'location ~ ^/(?:$|web(?:/.*)?)$'
+
+http_path_output=$(run_dry -y http://emby.example.com/emby -r http://127.0.0.1:8096/base)
+printf '%s\n' "$http_path_output" | grep -Fq 'location ~ ^/emby(?:$|/web(?:/.*)?)$'
+printf '%s\n' "$http_path_output" | grep -Fq 'rewrite ^/emby(?:/(.*))?$ /base/$1 break;'
