@@ -2306,7 +2306,7 @@ class WebUIServer(ThreadingHTTPServer):
 def parse_args():
     parser = argparse.ArgumentParser(description="Local WebUI for Emby Nginx Manager")
     parser.add_argument("--host", default=os.environ.get("EMBY_WEBUI_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("EMBY_WEBUI_PORT", "8765")))
+    parser.add_argument("--port", type=int, default=env_int("EMBY_WEBUI_PORT", 8765, minimum=1))
     parser.add_argument("--script", default=str(resolve_script_path()))
     parser.add_argument("--key", default=os.environ.get("EMBY_WEBUI_KEY"))
     parser.add_argument("--history-file", default=os.environ.get("EMBY_WEBUI_HISTORY_FILE", str(DEFAULT_STATE_DIR / "history.jsonl")))
@@ -2317,6 +2317,9 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.port < 1 or args.port > 65535:
+        print("错误: WebUI 端口必须在 1-65535 之间。", file=sys.stderr)
+        return 1
     script = Path(args.script).expanduser().resolve()
     if not script.is_file():
         print(f"错误: 找不到管理脚本: {script}", file=sys.stderr)

@@ -1,4 +1,5 @@
 import io
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -195,6 +196,20 @@ class ConfigParsingTests(unittest.TestCase):
                 webui.os.environ.pop("TEST_WEBUI_INT", None)
             else:
                 webui.os.environ["TEST_WEBUI_INT"] = original
+
+    def test_parse_args_uses_safe_default_port_env(self):
+        original_env = webui.os.environ.get("EMBY_WEBUI_PORT")
+        original_argv = sys.argv[:]
+        try:
+            webui.os.environ["EMBY_WEBUI_PORT"] = "invalid"
+            sys.argv = ["webui.py"]
+            self.assertEqual(webui.parse_args().port, 8765)
+        finally:
+            sys.argv = original_argv
+            if original_env is None:
+                webui.os.environ.pop("EMBY_WEBUI_PORT", None)
+            else:
+                webui.os.environ["EMBY_WEBUI_PORT"] = original_env
 
 
 class RequestSafetyTests(unittest.TestCase):
