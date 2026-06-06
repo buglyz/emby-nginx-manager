@@ -1601,20 +1601,23 @@ install_dependencies() {
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && "$skip_certificate_issue" != "yes" && ! -f "$ACME_SH" ]]; then
        log_info "正在为当前用户安装 acme.sh... (URL: $ACME_INSTALL_URL)"
-       local TMP_INSTALL_SCRIPT="./acme.sh"
-       trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
+       local TMP_INSTALL_SCRIPT
+       TMP_INSTALL_SCRIPT=$(mktemp)
 
        if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh" && \
           verify_sha256 "$TMP_INSTALL_SCRIPT" "${ACME_INSTALL_SHA256:-}"; then
            if sh "$TMP_INSTALL_SCRIPT" --install-online; then
+               rm -f "$TMP_INSTALL_SCRIPT"
                log_success "acme.sh 安装完成。"
                "$ACME_SH" --upgrade --auto-upgrade
                "$ACME_SH" --set-default-ca --server letsencrypt
            else
+               rm -f "$TMP_INSTALL_SCRIPT"
                log_error "acme.sh 安装脚本执行失败。"
                exit 1
            fi
        else
+           rm -f "$TMP_INSTALL_SCRIPT"
            exit 1
        fi
     fi

@@ -257,6 +257,14 @@ class StaticSafetyTests(unittest.TestCase):
     def test_webui_does_not_reprint_result_after_refresh(self):
         self.assertNotIn("printOutput(result);\n        await refreshList(false);\n        await refreshHistory(false);\n        printOutput(result);", webui.HTML)
 
+    def test_acme_installer_uses_tempfile(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn('TMP_INSTALL_SCRIPT="./acme.sh"', deploy)
+        self.assertNotIn("trap \"rm -f '$TMP_INSTALL_SCRIPT'\" RETURN", deploy)
+        self.assertIn("TMP_INSTALL_SCRIPT=$(mktemp)", deploy)
+
     def test_no_server_side_redirect_proxy_without_allowlist(self):
         root = Path(__file__).resolve().parents[1]
         deploy = (root / "deploy.sh").read_text(encoding="utf-8")
