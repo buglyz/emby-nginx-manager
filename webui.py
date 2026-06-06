@@ -2358,6 +2358,8 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError as exc:
             raise WebUIError("Content-Length 无效") from exc
+        if length < 0:
+            raise WebUIError("Content-Length 无效")
         if length > MAX_BODY_BYTES:
             raise WebUIError("请求体过大")
         if length == 0:

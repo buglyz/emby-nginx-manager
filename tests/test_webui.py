@@ -445,8 +445,9 @@ class ConfigParsingTests(unittest.TestCase):
 
 class RequestSafetyTests(unittest.TestCase):
     class DummyHandler:
-        def __init__(self, headers, access_key="secret"):
+        def __init__(self, headers, access_key="secret", body=b""):
             self.headers = headers
+            self.rfile = io.BytesIO(body)
             self.server = type("Server", (), {"access_key": access_key})()
 
     def same_origin(self, headers, access_key="secret"):
@@ -518,6 +519,12 @@ class RequestSafetyTests(unittest.TestCase):
 
         self.assertIn("Secure", cookie)
         self.assertIn("HttpOnly", cookie)
+
+    def test_negative_content_length_is_rejected(self):
+        handler = self.DummyHandler({"Content-Length": "-1"}, body=b'{"ok": true}')
+
+        with self.assertRaises(webui.WebUIError):
+            webui.Handler.read_json_body(handler)
 
 
 class RedactionTests(unittest.TestCase):
