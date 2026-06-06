@@ -262,6 +262,41 @@ class RestorePathTests(unittest.TestCase):
             self.assertTrue(conf.is_symlink())
             self.assertEqual(outside.read_text(encoding="utf-8"), "original\n")
 
+    def test_restore_rolls_back_after_mid_restore_failure(self):
+        original_env = webui.os.environ.get("NGINX_CONF_DIR")
+        original_run = webui.run_system_command
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf_dir = root / "sites-enabled"
+            conf_dir.mkdir()
+            first = conf_dir / "aaa.example.com.conf"
+            second = conf_dir / "zzz.example.com.conf"
+            outside = root / "outside.conf"
+            first.write_text("original\n", encoding="utf-8")
+            outside.write_text("outside\n", encoding="utf-8")
+            second.symlink_to(outside)
+            backup_dir, name = self.make_archive(
+                {
+                    str(first).lstrip("/"): "# nre_emby_managed=true\nserver { listen 443 ssl; }\n",
+                    str(second).lstrip("/"): "# nre_emby_managed=true\nserver { listen 443 ssl; }\n",
+                }
+            )
+
+            try:
+                webui.os.environ["NGINX_CONF_DIR"] = str(conf_dir)
+                webui.run_system_command = lambda *args, **kwargs: {"ok": True, "output": ""}
+                with self.assertRaises(webui.WebUIError):
+                    webui.restore_backup_archive(backup_dir, name)
+            finally:
+                webui.run_system_command = original_run
+                if original_env is None:
+                    webui.os.environ.pop("NGINX_CONF_DIR", None)
+                else:
+                    webui.os.environ["NGINX_CONF_DIR"] = original_env
+
+            self.assertEqual(first.read_text(encoding="utf-8"), "original\n")
+            self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+
     def test_restore_rejects_symlink_parent_directories(self):
         original_env = webui.os.environ.get("NGINX_CONF_DIR")
         original_run = webui.run_system_command

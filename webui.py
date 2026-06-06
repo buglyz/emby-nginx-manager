@@ -1743,6 +1743,18 @@ def ensure_regular_parent_dir(path):
         part.mkdir()
 
 
+def rollback_restored_files(rollback, created):
+    for dest, old in reversed(rollback):
+        replace_regular_file(old, dest, restore_mode_for_arcname(backup_arcname(dest)))
+    for dest in reversed(created):
+        try:
+            if dest.is_symlink() or not dest.is_file():
+                continue
+            dest.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def restore_backup_archive(backup_dir, name):
     name = clean_text_field(name, label="备份名称", required=True, max_len=128)
     if not BACKUP_NAME_RE.fullmatch(name):
@@ -1767,32 +1779,30 @@ def restore_backup_archive(backup_dir, name):
                 os.chmod(src, restore_mode_for_arcname(member.name))
 
         backup_existing = tmp_root_path / "existing"
-        for member, _data in sorted(items, key=lambda item: item[0].name):
-            src = tmp_root_path / member.name
-            rel = Path(member.name)
-            dest = Path("/") / rel
-            ensure_regular_parent_dir(dest)
-            if dest.exists() or dest.is_symlink():
-                if dest.is_symlink() or not dest.is_file():
-                    raise WebUIError(f"恢复目标不是普通文件: {dest}")
-                old = backup_existing / rel
-                old.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dest, old)
-                rollback.append((dest, old))
-            else:
-                created.append(dest)
-            replace_regular_file(src, dest, restore_mode_for_arcname(member.name))
-            restored.append(str(dest))
+        try:
+            for member, _data in sorted(items, key=lambda item: item[0].name):
+                src = tmp_root_path / member.name
+                rel = Path(member.name)
+                dest = Path("/") / rel
+                ensure_regular_parent_dir(dest)
+                if dest.exists() or dest.is_symlink():
+                    if dest.is_symlink() or not dest.is_file():
+                        raise WebUIError(f"恢复目标不是普通文件: {dest}")
+                    old = backup_existing / rel
+                    old.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dest, old)
+                    rollback.append((dest, old))
+                else:
+                    created.append(dest)
+                replace_regular_file(src, dest, restore_mode_for_arcname(member.name))
+                restored.append(str(dest))
+        except (OSError, WebUIError):
+            rollback_restored_files(rollback, created)
+            raise
 
         test_result = run_system_command(["nginx", "-t"], timeout=60)
         if not test_result["ok"]:
-            for dest, old in rollback:
-                replace_regular_file(old, dest, restore_mode_for_arcname(backup_arcname(dest)))
-            for dest in created:
-                try:
-                    dest.unlink()
-                except FileNotFoundError:
-                    pass
+            rollback_restored_files(rollback, created)
             raise WebUIError("恢复后的 Nginx 配置测试失败，已回滚: " + test_result.get("output", ""))
 
     reload_result = run_system_command(["nginx", "-s", "reload"], timeout=60)
