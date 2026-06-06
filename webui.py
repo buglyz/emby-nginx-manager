@@ -26,7 +26,7 @@ DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DNS_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 URL_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
 CONFIG_PATH_FORBIDDEN_RE = re.compile(r"[\s;{}\"'\\]")
-BACKUP_NAME_RE = re.compile(r"^emby-nginx-manager-[0-9]{14}\.tar\.gz$")
+BACKUP_NAME_RE = re.compile(r"^emby-nginx-manager-(?:[0-9]{14}|[0-9]{26})\.tar\.gz$")
 CERT_BACKUP_ARC_RE = re.compile(
     r"^etc/nginx/(?:certs/[^/]+/(?:cert|key)|ssl/[^/]+/(?:fullchain\.pem|privkey\.pem))$"
 )
@@ -1603,10 +1603,23 @@ def add_backup_file(tar, path):
         tar.addfile(info, handle)
 
 
+def next_backup_archive_path(backup_dir):
+    now_ns = time.time_ns()
+    seconds = now_ns // 1_000_000_000
+    subsecond = now_ns % 1_000_000_000
+    prefix = time.strftime("%Y%m%d%H%M%S", time.localtime(seconds))
+    prefix = f"{prefix}{subsecond:09d}"
+    for counter in range(1000):
+        name = f"emby-nginx-manager-{prefix}{counter:03d}.tar.gz"
+        path = backup_dir / name
+        if not path.exists():
+            return name, path
+    raise WebUIError("无法生成唯一备份文件名")
+
+
 def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-    name = f"emby-nginx-manager-{time.strftime('%Y%m%d%H%M%S')}.tar.gz"
-    final_path = backup_dir / name
+    name, final_path = next_backup_archive_path(backup_dir)
     tmp_path = None
     files = collect_backup_files()
     manifest = {

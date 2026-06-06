@@ -411,6 +411,30 @@ class BackupArchiveTests(unittest.TestCase):
                         self.assertEqual(member.uname, "")
                         self.assertEqual(member.gname, "")
 
+    def test_backup_archive_names_do_not_collide_with_same_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf = root / "emby.example.com-443.conf"
+            conf.write_text("# nre_emby_managed=true\nserver {}\n", encoding="utf-8")
+            backup_dir = root / "backups"
+
+            original_collect = webui.collect_backup_files
+            original_time_ns = webui.time.time_ns
+            webui.collect_backup_files = lambda: [conf]
+            webui.time.time_ns = lambda: 1760000000123456789
+            try:
+                first = webui.create_backup_archive(backup_dir)
+                second = webui.create_backup_archive(backup_dir)
+            finally:
+                webui.collect_backup_files = original_collect
+                webui.time.time_ns = original_time_ns
+
+            self.assertNotEqual(first["name"], second["name"])
+            self.assertTrue(Path(first["path"]).is_file())
+            self.assertTrue(Path(second["path"]).is_file())
+            self.assertRegex(first["name"], webui.BACKUP_NAME_RE)
+            self.assertRegex(second["name"], webui.BACKUP_NAME_RE)
+
 
 class ConfigParsingTests(unittest.TestCase):
     def test_env_int_falls_back_for_invalid_values(self):
