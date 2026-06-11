@@ -1468,7 +1468,10 @@ def run_command(script, args, timeout):
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            stdout, stderr = proc.communicate()
+            try:
+                stdout, stderr = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = "", ""
         output = (stdout or "") + (stderr or "")
         if not output and exc.output:
             output = str(exc.output)
@@ -1906,6 +1909,7 @@ def next_backup_archive_path(backup_dir):
 
 
 def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
+    started = time.time()
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     name, final_path = next_backup_archive_path(backup_dir)
     tmp_path = None
@@ -1942,7 +1946,7 @@ def create_backup_archive(backup_dir, keep=DEFAULT_BACKUP_KEEP):
         "exit_code": 0,
         "command": "create backup",
         "output": f"备份完成: {final_path}\n文件数量: {len(files)}",
-        "duration_ms": 0,
+        "duration_ms": int((time.time() - started) * 1000),
         "name": name,
         "path": str(final_path),
         "files": [str(path) for path in files],
@@ -2340,6 +2344,7 @@ def deploy_args(payload):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "EmbyNginxWebUI/0.1"
+    timeout = 30
 
     def log_message(self, fmt, *args):
         message = redact_sensitive_text(fmt % args)

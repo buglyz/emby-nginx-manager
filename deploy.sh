@@ -1183,18 +1183,20 @@ doctor_log_cutoff_text() {
 }
 
 run_doctor() {
-    local warnings=0 failures=0 file domain url code cert_days support_conf recent_errors log_cutoff managed_domain_regex escaped_domain
+    local warnings=0 failures=0 file domain url code cert_days support_conf recent_errors log_cutoff managed_domain_regex escaped_domain nre_doctor_log
 
     echo -e "${BLUE}========= Emby Nginx Doctor =========${NC}"
 
     if command -v nginx >/dev/null 2>&1; then
-        if $SUDO nginx -t >/tmp/nre-nginx-doctor.log 2>&1; then
+        nre_doctor_log=$(mktemp)
+        if $SUDO nginx -t >"$nre_doctor_log" 2>&1; then
             doctor_ok "Nginx 配置语法通过"
         else
             doctor_fail "Nginx 配置语法失败"
-            $SUDO sed -n '1,80p' /tmp/nre-nginx-doctor.log
+            $SUDO sed -n '1,80p' "$nre_doctor_log"
             failures=$((failures + 1))
         fi
+        rm -f "$nre_doctor_log"
     else
         doctor_fail "未找到 nginx 命令"
         failures=$((failures + 1))
