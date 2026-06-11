@@ -70,32 +70,79 @@ def env_int(name, default, minimum=None):
 DEFAULT_BACKUP_KEEP = env_int("EMBY_WEBUI_BACKUP_KEEP", 20, minimum=1)
 
 
-HTML = r"""<!doctype html>
+HTML = r"""
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Emby Nginx Manager</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f766e'/><polygon points='12,9 24,16 12,23' fill='white'/></svg>">
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('emby-webui-theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = saved || (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f4f6f8;
+      --bg: #eef1f5;
+      --bg-grad: radial-gradient(1200px 600px at 100% -10%, rgba(15, 118, 110, .10), transparent 60%), radial-gradient(900px 500px at -10% 0%, rgba(37, 99, 235, .08), transparent 55%);
       --surface: #ffffff;
-      --surface-soft: #f8fafc;
-      --surface-strong: #eef2f5;
-      --line: #d8e0e7;
-      --line-strong: #bdc9d4;
-      --text: #17202a;
-      --muted: #667687;
+      --surface-soft: #f7fafc;
+      --surface-strong: #eef2f6;
+      --line: #dce3ea;
+      --line-strong: #c4cfd9;
+      --text: #131a22;
+      --muted: #64748b;
       --primary: #0f766e;
       --primary-hover: #0b5f59;
       --accent: #2563eb;
-      --danger: #b42318;
-      --danger-hover: #8f1d14;
+      --danger: #c0392b;
+      --danger-hover: #9b2c1f;
       --warn: #a16207;
-      --ok: #13795b;
-      --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 28px rgba(16, 24, 40, .08);
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ok: #0f7a5a;
+      --code-bg: #0f1726;
+      --code-text: #e6eef7;
+      --code-line: #1d2940;
+      --ring: rgba(15, 118, 110, .18);
+      --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
+      --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 12px 30px rgba(16, 24, 40, .08);
+      --shadow-pop: 0 12px 34px rgba(16, 24, 40, .16);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0b1118;
+      --bg-grad: radial-gradient(1200px 600px at 100% -10%, rgba(13, 148, 136, .16), transparent 60%), radial-gradient(900px 500px at -10% 0%, rgba(37, 99, 235, .14), transparent 55%);
+      --surface: #131b25;
+      --surface-soft: #172230;
+      --surface-strong: #1d2a3a;
+      --line: #25323f;
+      --line-strong: #34465a;
+      --text: #e7eef6;
+      --muted: #93a3b5;
+      --primary: #2dd4bf;
+      --primary-hover: #5eead4;
+      --accent: #60a5fa;
+      --danger: #f87171;
+      --danger-hover: #fca5a5;
+      --warn: #fbbf24;
+      --ok: #34d399;
+      --code-bg: #0a1019;
+      --code-text: #dbe7f3;
+      --code-line: #1a2434;
+      --ring: rgba(45, 212, 191, .26);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 14px 34px rgba(0, 0, 0, .45);
+      --shadow-pop: 0 14px 38px rgba(0, 0, 0, .55);
     }
 
     * { box-sizing: border-box; }
@@ -104,8 +151,13 @@ HTML = r"""<!doctype html>
       margin: 0;
       min-height: 100vh;
       background: var(--bg);
+      background-image: var(--bg-grad);
+      background-attachment: fixed;
       color: var(--text);
       font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color .25s ease, color .25s ease;
     }
 
     header {
@@ -114,39 +166,61 @@ HTML = r"""<!doctype html>
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 16px clamp(16px, 4vw, 42px);
+      padding: 14px clamp(16px, 4vw, 42px);
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, .96);
-      backdrop-filter: blur(8px);
+      background: color-mix(in srgb, var(--surface) 86%, transparent);
+      backdrop-filter: blur(10px);
       position: sticky;
       top: 0;
-      z-index: 5;
+      z-index: 20;
     }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      box-shadow: 0 6px 16px var(--ring);
+    }
+
+    .brand-logo svg { width: 18px; height: 18px; display: block; }
 
     h1 {
       margin: 0;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 20px;
-      font-weight: 750;
-      letter-spacing: 0;
+      font-size: 18px;
+      font-weight: 760;
+      letter-spacing: .2px;
+      white-space: nowrap;
     }
 
-    h1::before {
-      content: "";
-      width: 10px;
-      height: 28px;
-      border-radius: 3px;
-      background: var(--primary);
-      box-shadow: inset 0 -12px 0 rgba(37, 99, 235, .9);
-      flex: 0 0 auto;
+    .brand-sub {
+      margin: 1px 0 0;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .head-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
 
     main {
       width: min(1380px, 100%);
       margin: 0 auto;
-      padding: 20px clamp(14px, 3vw, 30px) 32px;
+      padding: 22px clamp(14px, 3vw, 30px) 40px;
       display: grid;
       grid-template-columns: minmax(330px, 410px) minmax(0, 1fr);
       gap: 18px;
@@ -156,14 +230,14 @@ HTML = r"""<!doctype html>
     section {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 12px;
       box-shadow: var(--shadow);
       overflow: hidden;
     }
 
     main > section:first-child {
       position: sticky;
-      top: 88px;
+      top: 92px;
     }
 
     .panel-head {
@@ -177,11 +251,26 @@ HTML = r"""<!doctype html>
       background: var(--surface-soft);
     }
 
+    .panel-head h2 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-head h2::before {
+      content: "";
+      width: 4px;
+      height: 15px;
+      border-radius: 3px;
+      background: var(--primary);
+      flex: 0 0 auto;
+    }
+
     h2 {
       margin: 0;
       font-size: 14px;
-      font-weight: 750;
-      letter-spacing: 0;
+      font-weight: 740;
+      letter-spacing: .2px;
     }
 
     .panel-body {
@@ -196,7 +285,7 @@ HTML = r"""<!doctype html>
     #remove-form {
       margin-top: 4px;
       padding-top: 16px;
-      border-top: 1px solid var(--line);
+      border-top: 1px dashed var(--line-strong);
     }
 
     .field {
@@ -210,49 +299,62 @@ HTML = r"""<!doctype html>
       font-weight: 700;
     }
 
+    .hint {
+      font-size: 11.5px;
+      font-weight: 500;
+      color: var(--muted);
+      opacity: .85;
+    }
+
     input[type="text"] {
       width: 100%;
-      height: 39px;
+      height: 40px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0 11px;
+      border-radius: 8px;
+      padding: 0 12px;
       color: var(--text);
-      background: #fff;
+      background: var(--surface-soft);
       outline: none;
       font-size: 14px;
       transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
     }
 
-    input[type="text"]::placeholder {
-      color: #98a5b3;
-    }
+    input[type="text"]::placeholder { color: var(--muted); opacity: .7; }
 
     input[type="text"]:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(15, 118, 110, .14);
+      background: var(--surface);
+      box-shadow: 0 0 0 3px var(--ring);
     }
 
     .checks {
       display: grid;
       grid-template-columns: 1fr;
-      gap: 8px;
+      gap: 6px;
       padding: 2px 0;
     }
 
     .check {
       display: flex;
       align-items: center;
-      gap: 9px;
-      min-height: 28px;
+      gap: 10px;
+      min-height: 32px;
+      padding: 0 8px;
+      border-radius: 8px;
       font-size: 13px;
       color: var(--text);
+      cursor: pointer;
+      transition: background-color .15s ease;
     }
 
+    .check:hover { background: var(--surface-strong); }
+
     input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
+      width: 17px;
+      height: 17px;
       margin: 0;
       accent-color: var(--primary);
+      cursor: pointer;
     }
 
     .actions {
@@ -262,50 +364,74 @@ HTML = r"""<!doctype html>
     }
 
     button {
-      min-height: 37px;
-      border: 1px solid transparent;
-      border-radius: 6px;
-      padding: 0 13px;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 14px;
       font-size: 13px;
-      font-weight: 750;
+      font-weight: 720;
       cursor: pointer;
       background: var(--surface-strong);
       color: var(--text);
-      transition: transform .12s ease, background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      transition: transform .12s ease, background-color .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease;
     }
+
+    button svg { width: 15px; height: 15px; flex: 0 0 auto; }
 
     button:hover {
       transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(16, 24, 40, .09);
+      border-color: var(--line-strong);
+      box-shadow: var(--shadow-sm);
     }
+
+    button:active { transform: translateY(0); }
 
     button.primary {
       background: var(--primary);
+      border-color: var(--primary);
       color: #fff;
     }
 
-    button.primary:hover { background: var(--primary-hover); }
+    button.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
 
     button.danger {
       background: var(--danger);
+      border-color: var(--danger);
       color: #fff;
     }
 
-    button.danger:hover { background: var(--danger-hover); }
-
-    button.secondary:hover { border-color: var(--line-strong); }
+    button.danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
 
     button:focus-visible {
       outline: none;
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+      box-shadow: 0 0 0 3px var(--ring);
     }
 
     button:disabled {
-      opacity: .55;
-      cursor: wait;
+      opacity: .5;
+      cursor: not-allowed;
       transform: none;
       box-shadow: none;
     }
+
+    .icon-btn {
+      min-height: 38px;
+      width: 38px;
+      padding: 0;
+      border-radius: 9px;
+      background: var(--surface-strong);
+    }
+
+    .icon-btn svg { width: 17px; height: 17px; }
+
+    .theme-toggle .sun { display: none; }
+    .theme-toggle .moon { display: block; }
+    :root[data-theme="dark"] .theme-toggle .sun { display: block; }
+    :root[data-theme="dark"] .theme-toggle .moon { display: none; }
 
     .right {
       display: grid;
@@ -324,11 +450,11 @@ HTML = r"""<!doctype html>
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      min-height: 30px;
-      padding: 0 11px;
+      min-height: 32px;
+      padding: 0 13px;
       border-radius: 999px;
       border: 1px solid #b7dbc9;
-      background: #ecfdf5;
+      background: color-mix(in srgb, var(--ok) 12%, var(--surface));
       color: var(--ok);
       font-size: 12px;
       font-weight: 800;
@@ -344,40 +470,47 @@ HTML = r"""<!doctype html>
     }
 
     .status.is-busy {
-      border-color: #bfdbfe;
-      background: #eff6ff;
+      border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+      background: color-mix(in srgb, var(--accent) 12%, var(--surface));
       color: var(--accent);
     }
 
+    .status.is-busy::before { animation: pulse 1s ease-in-out infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: .35; transform: scale(.7); }
+    }
+
     .status.is-error {
-      border-color: #fecaca;
-      background: #fef2f2;
+      border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+      background: color-mix(in srgb, var(--danger) 12%, var(--surface));
       color: var(--danger);
     }
 
     .status.is-warn {
-      border-color: #fde68a;
-      background: #fffbeb;
+      border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+      background: color-mix(in srgb, var(--warn) 14%, var(--surface));
       color: var(--warn);
     }
 
     .table-wrap {
       overflow: auto;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
+      border-radius: 10px;
+      background: var(--surface);
     }
 
     table {
       width: 100%;
       border-collapse: separate;
       border-spacing: 0;
-      min-width: 820px;
+      min-width: 760px;
       font-size: 13px;
     }
 
     th, td {
-      padding: 10px 12px;
+      padding: 11px 13px;
       border-bottom: 1px solid var(--line);
       text-align: left;
       white-space: nowrap;
@@ -390,23 +523,24 @@ HTML = r"""<!doctype html>
       z-index: 1;
       background: var(--surface-strong);
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11.5px;
       font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .4px;
     }
 
-    tbody tr:hover td {
-      background: #f8fbfc;
-    }
+    tbody tr { transition: background-color .12s ease; }
+    tbody tr:hover td { background: var(--surface-soft); }
 
     tr:last-child td { border-bottom: 0; }
 
     td.mono {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      color: #334155;
+      color: var(--text);
     }
 
     .empty-cell {
-      height: 74px;
+      height: 78px;
       color: var(--muted);
       text-align: center;
     }
@@ -414,31 +548,31 @@ HTML = r"""<!doctype html>
     .badge {
       display: inline-flex;
       align-items: center;
-      min-height: 22px;
-      padding: 0 8px;
+      min-height: 23px;
+      padding: 0 9px;
       border-radius: 999px;
-      border: 1px solid var(--line);
+      border: 1px solid var(--line-strong);
       background: var(--surface-soft);
-      color: #475569;
+      color: var(--muted);
       font-size: 12px;
       font-weight: 800;
     }
 
     .badge.ok {
-      border-color: #b7dbc9;
-      background: #ecfdf5;
+      border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+      background: color-mix(in srgb, var(--ok) 12%, var(--surface));
       color: var(--ok);
     }
 
     .badge.warn {
-      border-color: #fde68a;
-      background: #fffbeb;
+      border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+      background: color-mix(in srgb, var(--warn) 14%, var(--surface));
       color: var(--warn);
     }
 
     .badge.danger {
-      border-color: #fecaca;
-      background: #fef2f2;
+      border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+      background: color-mix(in srgb, var(--danger) 12%, var(--surface));
       color: var(--danger);
     }
 
@@ -451,15 +585,21 @@ HTML = r"""<!doctype html>
       min-height: 280px;
       max-height: 540px;
       overflow: auto;
-      padding: 14px;
-      border-radius: 8px;
-      border: 1px solid #172033;
-      background: #101827;
-      color: #e5edf5;
-      font-size: 12px;
-      line-height: 1.6;
+      padding: 15px;
+      border-radius: 10px;
+      border: 1px solid var(--code-line);
+      background: var(--code-bg);
+      color: var(--code-text);
+      font-size: 12.5px;
+      line-height: 1.65;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    pre:empty::before {
+      content: "暂无输出";
+      color: var(--muted);
+      opacity: .6;
     }
 
     .split {
@@ -468,55 +608,98 @@ HTML = r"""<!doctype html>
       gap: 12px;
     }
 
-    @media (max-width: 980px) {
-      main {
-        grid-template-columns: 1fr;
-      }
+    .toast-wrap {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: min(360px, calc(100vw - 36px));
+      pointer-events: none;
+    }
 
-      main > section:first-child {
-        position: static;
-      }
+    .toast {
+      pointer-events: auto;
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      padding: 11px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--muted);
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: var(--shadow-pop);
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity .25s ease, transform .25s ease;
+      word-break: break-word;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast-ok { border-left-color: var(--ok); }
+    .toast-error { border-left-color: var(--danger); }
+    .toast-warn { border-left-color: var(--warn); }
+    .toast-info { border-left-color: var(--accent); }
+
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      main > section:first-child { position: static; }
     }
 
     @media (max-width: 560px) {
       header {
         align-items: flex-start;
         flex-direction: column;
+        gap: 10px;
         position: static;
       }
 
-      h1 {
-        font-size: 18px;
-      }
-
-      main {
-        padding-inline: 12px;
-      }
+      .head-right { width: 100%; justify-content: space-between; }
+      h1 { font-size: 17px; }
+      main { padding-inline: 12px; }
 
       .panel-head {
         align-items: flex-start;
         flex-direction: column;
       }
 
-      .split {
-        grid-template-columns: 1fr;
-      }
+      .toolbar { width: 100%; }
+      .split { grid-template-columns: 1fr; }
 
-      .actions, .toolbar {
-        flex-direction: column;
-        width: 100%;
-      }
+      .actions button[type="submit"],
+      .actions button.danger { flex: 1 1 auto; }
 
-      button {
-        width: 100%;
-      }
+      .toast-wrap { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>Emby Nginx Manager</h1>
-    <div class="status" id="status">就绪</div>
+    <div class="brand">
+      <span class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M8 6.5v11l9-5.5-9-5.5z" fill="#fff"/></svg>
+      </span>
+      <div>
+        <h1>Emby Nginx Manager</h1>
+        <p class="brand-sub">反向代理与证书管理</p>
+      </div>
+    </div>
+    <div class="head-right">
+      <div class="status" id="status">就绪</div>
+      <button class="icon-btn theme-toggle" id="theme-toggle" type="button" data-chrome title="切换主题" aria-label="切换主题">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </div>
   </header>
 
   <main>
@@ -528,20 +711,20 @@ HTML = r"""<!doctype html>
         <form id="deploy-form" class="stack">
           <div class="field">
             <label for="frontend">访问地址</label>
-            <input id="frontend" name="frontend" type="text" placeholder="jsq.emby.example.com" autocomplete="off">
+            <input id="frontend" name="frontend" type="text" placeholder="jsq.emby.example.com" autocomplete="off" spellcheck="false">
           </div>
           <div class="field">
             <label for="backend">后端地址</label>
-            <input id="backend" name="backend" type="text" placeholder="https://a.example.com" autocomplete="off">
+            <input id="backend" name="backend" type="text" placeholder="https://a.example.com" autocomplete="off" spellcheck="false">
           </div>
           <div class="split">
             <div class="field">
               <label for="cert_domain">证书域名</label>
-              <input id="cert_domain" name="cert_domain" type="text" autocomplete="off">
+              <input id="cert_domain" name="cert_domain" type="text" placeholder="example.com" autocomplete="off" spellcheck="false">
             </div>
             <div class="field">
               <label for="dns_provider">DNS Provider</label>
-              <input id="dns_provider" name="dns_provider" type="text" placeholder="cf" autocomplete="off">
+              <input id="dns_provider" name="dns_provider" type="text" placeholder="cf" autocomplete="off" spellcheck="false">
             </div>
           </div>
           <div class="checks">
@@ -550,19 +733,28 @@ HTML = r"""<!doctype html>
             <label class="check"><input id="confirm_deploy" name="confirm_deploy" type="checkbox"> 确认写入配置</label>
           </div>
           <div class="actions">
-            <button class="secondary" type="submit" value="preview">预览</button>
-            <button class="primary" type="submit" value="deploy">写入</button>
+            <button class="secondary" type="submit" value="preview">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              预览
+            </button>
+            <button class="primary" type="submit" value="deploy">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+              写入
+            </button>
           </div>
         </form>
 
         <form id="remove-form" class="stack">
           <div class="field">
             <label for="remove_target">删除地址</label>
-            <input id="remove_target" name="remove_target" type="text" placeholder="https://jsq.emby.example.com" autocomplete="off">
+            <input id="remove_target" name="remove_target" type="text" placeholder="https://jsq.emby.example.com" autocomplete="off" spellcheck="false">
           </div>
           <label class="check"><input id="confirm_remove" name="confirm_remove" type="checkbox"> 确认删除配置</label>
           <div class="actions">
-            <button class="danger" type="submit">删除</button>
+            <button class="danger" type="submit">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>
+              删除
+            </button>
           </div>
         </form>
       </div>
@@ -658,8 +850,8 @@ HTML = r"""<!doctype html>
         <div class="panel-head">
           <h2>命令输出</h2>
           <div class="toolbar">
-            <button class="secondary" id="copy-output" type="button">复制</button>
-            <button class="secondary" id="clear-output" type="button">清空</button>
+            <button class="secondary" id="copy-output" type="button" data-chrome>复制</button>
+            <button class="secondary" id="clear-output" type="button" data-chrome>清空</button>
           </div>
         </div>
         <div class="panel-body">
@@ -668,6 +860,8 @@ HTML = r"""<!doctype html>
       </section>
     </div>
   </main>
+
+  <div class="toast-wrap" id="toast-wrap" aria-live="polite" aria-atomic="false"></div>
 
   <script>
     const keyParam = new URLSearchParams(window.location.search).get('key');
@@ -679,6 +873,61 @@ HTML = r"""<!doctype html>
     const configBody = document.getElementById('config-body');
     const backupBody = document.getElementById('backup-body');
     const historyBody = document.getElementById('history-body');
+    const toastWrap = document.getElementById('toast-wrap');
+
+    const THEME_KEY = 'emby-webui-theme';
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+    }
+
+    function currentTheme() {
+      return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    }
+
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+      const next = currentTheme() === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+      showToast(next === 'dark' ? '已切换到深色主题' : '已切换到浅色主题', 'info');
+    });
+
+    function showToast(message, type = 'info') {
+      if (!message) return;
+      const el = document.createElement('div');
+      el.className = `toast toast-${type}`;
+      el.textContent = message;
+      toastWrap.appendChild(el);
+      requestAnimationFrame(() => el.classList.add('show'));
+      window.setTimeout(() => {
+        el.classList.remove('show');
+        window.setTimeout(() => el.remove(), 300);
+      }, 3200);
+    }
+
+    let progressTimer = null;
+    let progressStarted = 0;
+    let progressLabel = '';
+
+    function tickProgress() {
+      const secs = Math.floor((Date.now() - progressStarted) / 1000);
+      setStatus(`${progressLabel} ${secs}s`, 'busy');
+    }
+
+    function startProgress(label) {
+      stopProgress();
+      progressLabel = label;
+      progressStarted = Date.now();
+      setStatus(label, 'busy');
+      progressTimer = window.setInterval(tickProgress, 1000);
+    }
+
+    function stopProgress() {
+      if (progressTimer !== null) {
+        window.clearInterval(progressTimer);
+        progressTimer = null;
+      }
+    }
 
     function setStatus(text, state = 'ready') {
       statusEl.textContent = text;
@@ -686,15 +935,25 @@ HTML = r"""<!doctype html>
       if (state !== 'ready') statusEl.classList.add(`is-${state}`);
     }
 
-    function setBusy(text) {
-      setStatus(text, 'busy');
-      document.querySelectorAll('button').forEach((button) => button.disabled = true);
+    function setActionButtonsDisabled(disabled) {
+      document.querySelectorAll('button:not([data-chrome])').forEach((button) => button.disabled = disabled);
+    }
+
+    function setBusy(text, options = {}) {
+      setActionButtonsDisabled(true);
+      if (options.progress) {
+        startProgress(text);
+      } else {
+        stopProgress();
+        setStatus(text, 'busy');
+      }
     }
 
     function setReady(text = '就绪') {
+      stopProgress();
       const state = /Error|失败|异常|错误/.test(text) ? 'error' : (/warn|Check failed|需要/.test(text) ? 'warn' : 'ready');
       setStatus(text, state);
-      document.querySelectorAll('button').forEach((button) => button.disabled = false);
+      setActionButtonsDisabled(false);
     }
 
     function printOutput(result) {
@@ -879,6 +1138,7 @@ HTML = r"""<!doctype html>
         const button = document.createElement('button');
         button.className = 'secondary';
         button.type = 'button';
+        button.dataset.chrome = '';
         button.textContent = '查看';
         button.addEventListener('click', () => {
           printOutput({
@@ -905,6 +1165,7 @@ HTML = r"""<!doctype html>
         outputEl.textContent = error.message;
         configBody.innerHTML = '<tr><td class="empty-cell" colspan="6">加载失败</td></tr>';
         setReady('错误');
+        showToast(error.message, 'error');
       }
     }
 
@@ -919,6 +1180,7 @@ HTML = r"""<!doctype html>
         outputEl.textContent = error.message;
         backupBody.innerHTML = '<tr><td class="empty-cell" colspan="4">加载失败</td></tr>';
         setReady('错误');
+        showToast(error.message, 'error');
       }
     }
 
@@ -933,6 +1195,7 @@ HTML = r"""<!doctype html>
         outputEl.textContent = error.message;
         historyBody.innerHTML = '<tr><td class="empty-cell" colspan="6">加载失败</td></tr>';
         setReady('错误');
+        showToast(error.message, 'error');
       }
     }
 
@@ -951,8 +1214,11 @@ HTML = r"""<!doctype html>
           output: files.map((file) => file.path).join('\n') || '无可恢复文件'
         });
         setReady('待确认');
-        if (!window.confirm(`确认恢复备份 ${name}？将恢复 ${files.length} 个文件。`)) return;
-        setBusy('恢复中');
+        if (!window.confirm(`确认恢复备份 ${name}？将恢复 ${files.length} 个文件。`)) {
+          showToast('已取消恢复', 'info');
+          return;
+        }
+        setBusy('恢复中', { progress: true });
         const result = await api('/api/restore', {
           method: 'POST',
           body: JSON.stringify({ name, confirm_restore: true })
@@ -961,10 +1227,12 @@ HTML = r"""<!doctype html>
         await refreshList(false);
         await refreshHistory(false);
         setReady(result.ok ? '完成' : '失败');
+        showToast(result.ok ? '恢复完成' : '恢复失败', result.ok ? 'ok' : 'error');
       } catch (error) {
         outputEl.textContent = error.message;
         await refreshHistory(false);
         setReady('错误');
+        showToast(error.message, 'error');
       }
     }
 
@@ -973,17 +1241,19 @@ HTML = r"""<!doctype html>
     document.getElementById('refresh-history').addEventListener('click', () => refreshHistory(true));
 
     document.getElementById('create-backup').addEventListener('click', async () => {
-      setBusy('备份中');
+      setBusy('备份中', { progress: true });
       try {
         const result = await api('/api/backup', { method: 'POST', body: '{}' });
         printOutput(result);
         await refreshBackups(false);
         await refreshHistory(false);
         setReady('完成');
+        showToast('备份完成', 'ok');
       } catch (error) {
         outputEl.textContent = error.message;
         await refreshHistory(false);
         setReady('错误');
+        showToast(error.message, 'error');
       }
     });
 
@@ -1001,23 +1271,24 @@ HTML = r"""<!doctype html>
       } catch (error) {
         outputEl.textContent = error.message;
         setReady('错误');
+        showToast(error.message, 'error');
       }
     });
 
     document.getElementById('clear-output').addEventListener('click', () => {
       outputEl.textContent = '';
-      setReady('已清空');
+      showToast('已清空输出', 'info');
     });
 
     document.getElementById('copy-output').addEventListener('click', async () => {
       const text = outputEl.textContent || '';
       if (!text) {
-        setReady('空内容');
+        showToast('没有可复制的内容', 'warn');
         return;
       }
       try {
         await navigator.clipboard.writeText(text);
-        setReady('已复制');
+        showToast('已复制到剪贴板', 'ok');
       } catch (error) {
         const area = document.createElement('textarea');
         area.value = text;
@@ -1028,21 +1299,23 @@ HTML = r"""<!doctype html>
         area.select();
         document.execCommand('copy');
         area.remove();
-        setReady('已复制');
+        showToast('已复制到剪贴板', 'ok');
       }
     });
 
     document.getElementById('run-doctor').addEventListener('click', async () => {
-      setBusy('检查中');
+      setBusy('检查中', { progress: true });
       try {
         const result = await api('/api/doctor', { method: 'POST', body: '{}' });
         printOutput(result);
         await refreshHistory(false);
         setReady(result.exit_code === 0 ? '正常' : '检查失败');
+        showToast(result.exit_code === 0 ? '健康检查通过' : '健康检查发现问题', result.exit_code === 0 ? 'ok' : 'warn');
       } catch (error) {
         outputEl.textContent = error.message;
         await refreshHistory(false);
         setReady('错误');
+        showToast(error.message, 'error');
       }
     });
 
@@ -1065,20 +1338,27 @@ HTML = r"""<!doctype html>
       if (mode === 'deploy' && !payload.confirm_deploy) {
         outputEl.textContent = '需要勾选确认写入配置';
         setReady('需要确认');
+        showToast('请先勾选“确认写入配置”', 'warn');
         return;
       }
 
-      setBusy(mode === 'deploy' ? '写入中' : '预览中');
+      setBusy(mode === 'deploy' ? '写入中' : '预览中', { progress: true });
       try {
         const result = await api('/api/deploy', { method: 'POST', body: JSON.stringify(payload) });
         printOutput(result);
         await refreshList(false);
         await refreshHistory(false);
         setReady(result.exit_code === 0 ? '完成' : '失败');
+        if (result.exit_code === 0) {
+          showToast(mode === 'deploy' ? '配置已写入' : '预览完成', 'ok');
+        } else {
+          showToast(mode === 'deploy' ? '写入失败' : '预览失败', 'error');
+        }
       } catch (error) {
         outputEl.textContent = error.message;
         await refreshHistory(false);
         setReady('错误');
+        showToast(error.message, 'error');
       }
     });
 
@@ -1093,19 +1373,26 @@ HTML = r"""<!doctype html>
       if (!payload.confirm_remove) {
         outputEl.textContent = '需要勾选确认删除配置';
         setReady('需要确认');
+        showToast('请先勾选“确认删除配置”', 'warn');
         return;
       }
-      setBusy('删除中');
+      if (!window.confirm(`确认删除配置 ${payload.target || ''}？该操作不可撤销。`)) {
+        showToast('已取消删除', 'info');
+        return;
+      }
+      setBusy('删除中', { progress: true });
       try {
         const result = await api('/api/remove', { method: 'POST', body: JSON.stringify(payload) });
         printOutput(result);
         await refreshList(false);
         await refreshHistory(false);
         setReady(result.exit_code === 0 ? '完成' : '失败');
+        showToast(result.exit_code === 0 ? '配置已删除' : '删除失败', result.exit_code === 0 ? 'ok' : 'error');
       } catch (error) {
         outputEl.textContent = error.message;
         await refreshHistory(false);
         setReady('错误');
+        showToast(error.message, 'error');
       }
     });
 
